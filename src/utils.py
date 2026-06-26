@@ -1,20 +1,22 @@
-# -*- coding: utf-8 -*-
+import functools
+import inspect
 import json
 import os
 import random
 import shutil
 import string
-from pathlib import Path
-import functools
-import hashlib
-import re
 import traceback
-from typing import Any
-from urllib.parse import parse_qs, urlparse
 from collections import OrderedDict
-import execjs
-from .logger import logger
+from pathlib import Path
+from typing import Any
+
 import configparser
+import hashlib
+import execjs
+import re
+from urllib.parse import parse_qs, urlparse
+
+from .logger import logger
 
 OptionalStr = str | None
 OptionalDict = dict | None
@@ -36,17 +38,33 @@ class Color:
 
 
 def trace_error_decorator(func: callable) -> callable:
+    def _handle_error(error: Exception) -> list:
+        if isinstance(error, execjs.ProgramError):
+            logger.warning('Failed to execute JS code. Please check if the Node.js environment')
+            return []
+        error_line = traceback.extract_tb(error.__traceback__)[-1].lineno
+        error_info = (
+            f"message: type: {type(error).__name__}, {str(error)} in function {func.__name__} at line: {error_line}"
+        )
+        logger.error(error_info)
+        return []
+
+    if inspect.iscoroutinefunction(func):
+        @functools.wraps(func)
+        async def async_wrapper(*args: list, **kwargs: dict) -> Any:
+            try:
+                return await func(*args, **kwargs)
+            except Exception as error:
+                return _handle_error(error)
+
+        return async_wrapper
+
     @functools.wraps(func)
     def wrapper(*args: list, **kwargs: dict) -> Any:
         try:
             return func(*args, **kwargs)
-        except execjs.ProgramError:
-            logger.warning('Failed to execute JS code. Please check if the Node.js environment')
-        except Exception as e:
-            error_line = traceback.extract_tb(e.__traceback__)[-1].lineno
-            error_info = f"message: type: {type(e).__name__}, {str(e)} in function {func.__name__} at line: {error_line}"
-            logger.error(error_info)
-            return []
+        except Exception as error:
+            return _handle_error(error)
 
     return wrapper
 
@@ -203,4 +221,3 @@ def get_query_params(url: str, param_name: OptionalStr) -> dict | list[str]:
     else:
         values = query_params.get(param_name, [])
         return values
-    

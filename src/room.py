@@ -9,10 +9,10 @@ Copyright (c) 2023 by Hmily, All Rights Reserved.
 """
 import re
 import urllib.parse
-import execjs
 import httpx
 import urllib.request
-from . import JS_SCRIPT_PATH, utils
+from . import utils
+from .javascript import call_js_file
 
 no_proxy_handler = urllib.request.ProxyHandler({})
 opener = urllib.request.build_opener(no_proxy_handler)
@@ -43,8 +43,7 @@ async def get_xbogus(url: str, headers: dict | None = None) -> str:
     if not headers or 'user-agent' not in (k.lower() for k in headers):
         headers = HEADERS
     query = urllib.parse.urlparse(url).query
-    xbogus = execjs.compile(open(f'{JS_SCRIPT_PATH}/x-bogus.js').read()).call(
-        'sign', query, headers.get("User-Agent", "user-agent"))
+    xbogus = call_js_file("x-bogus.js", "sign", query, headers.get("User-Agent", "user-agent"))
     return xbogus
 
 

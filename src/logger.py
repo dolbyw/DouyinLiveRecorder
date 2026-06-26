@@ -1,20 +1,27 @@
-# -*- coding: utf-8 -*-
 
 import os
 import sys
+
 from loguru import logger
 
 logger.remove()
 
 custom_format = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> - <level>{message}</level>"
 
-logger.add(
+_console_sink_id = logger.add(
     sink=sys.stderr,
     format=custom_format,
     level="DEBUG",
     colorize=True,
     enqueue=True
 )
+
+
+def disable_console_logging() -> None:
+    global _console_sink_id
+    if _console_sink_id is not None:
+        logger.remove(_console_sink_id)
+        _console_sink_id = None
 
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
 

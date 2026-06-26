@@ -1,7 +1,6 @@
-# -*- coding: utf-8 -*-
-import asyncio
-from src.logger import logger
 from src import spider
+from src.http_clients.runner import run_async
+from src.logger import logger
 
 # 以下示例直播间链接不保证时效性，请自行查看链接是否能正常访问
 # Please note that the following example live room links may not be up-to-date
@@ -144,7 +143,7 @@ LIVE_STREAM_CONFIG = {
     },
     "vvxqiu": {
         "url": "https://h5webcdnp.vvxqiu.com//activity/videoShare/videoShare.html?h5Server=https://h5p.vvxqiu.com&"
-               "roomId=LP115664695&platformId=vvstar",
+        "roomId=LP115664695&platformId=vvstar",
         "func": spider.get_vvxqiu_stream_url,
     },
     "17live": {
@@ -206,7 +205,7 @@ LIVE_STREAM_CONFIG = {
     "picarto": {
         "url": "https://www.picarto.tv/cuteavalanche",
         "func": spider.get_picarto_stream_url,
-    }
+    },
 }
 
 
@@ -214,7 +213,7 @@ def test_live_stream(platform_name: str, proxy_addr=None, cookies=None) -> None:
     if platform_name in LIVE_STREAM_CONFIG:
         config = LIVE_STREAM_CONFIG[platform_name]
         try:
-            stream_data = asyncio.run(config['func'](config['url'], proxy_addr=proxy_addr, cookies=cookies))
+            stream_data = run_async(config["func"](config["url"], proxy_addr=proxy_addr, cookies=cookies))
             logger.debug(f"Stream data for {platform_name}: {stream_data}")
         except Exception as e:
             logger.error(f"Error fetching stream data for {platform_name}: {e}")

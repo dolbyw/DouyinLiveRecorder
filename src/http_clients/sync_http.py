@@ -1,88 +1,86 @@
-# -*- coding: utf-8 -*-
-import gzip
-import urllib.parse
-import urllib.error
+from __future__ import annotations
+
 import requests
-import ssl
-import json
-import urllib.request
 
-no_proxy_handler = urllib.request.ProxyHandler({})
-opener = urllib.request.build_opener(no_proxy_handler)
+from .. import utils
+from .client_pool import ClientPurpose, get_sync_session
+from .errors import wrap_requests_error
 
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-ssl_context.verify_mode = ssl.CERT_NONE
 OptionalStr = str | None
 OptionalDict = dict | None
 
 
-def sync_req(
-        url: str,
-        proxy_addr: OptionalStr = None,
-        headers: OptionalDict = None,
-        data: dict | bytes | None = None,
-        json_data: dict | list | None = None,
-        timeout: int = 20,
-        redirect_url: bool = False,
-        abroad: bool = False,
-        content_conding: str = 'utf-8'
-) -> str:
+def sync_fetch_response(
+    method: str,
+    url: str,
+    proxy_addr: OptionalStr = None,
+    headers: OptionalDict = None,
+    data: dict | bytes | None = None,
+    json_data: dict | list | None = None,
+    timeout: int = 20,
+    abroad: bool = False,
+    verify: bool = True,
+) -> requests.Response:
     if headers is None:
         headers = {}
+    normalized_proxy_addr = utils.handle_proxy_addr(proxy_addr)
+    if abroad:
+        purpose = ClientPurpose.ABROAD
+    elif normalized_proxy_addr:
+        purpose = ClientPurpose.PROXY
+    else:
+        purpose = ClientPurpose.DIRECT
+
+    session = get_sync_session(
+        purpose=purpose,
+        proxy_addr=normalized_proxy_addr,
+        trust_env=False,
+    )
     try:
-        if proxy_addr:
-            proxies = {
-                'http': proxy_addr,
-                'https': proxy_addr
-            }
-            if data or json_data:
-                response = requests.post(
-                    url, data=data, json=json_data, headers=headers, proxies=proxies, timeout=timeout
-                )
-            else:
-                response = requests.get(url, headers=headers, proxies=proxies, timeout=timeout)
-            if redirect_url:
-                return response.url
-            resp_str = response.text
-        else:
-            if data and not isinstance(data, bytes):
-                data = urllib.parse.urlencode(data).encode(content_conding)
-            if json_data and isinstance(json_data, (dict, list)):
-                data = json.dumps(json_data).encode(content_conding)
+        if method.upper() == "POST":
+            return session.post(
+                url,
+                data=data,
+                json=json_data,
+                headers=headers,
+                timeout=timeout,
+                verify=verify,
+            )
+        return session.get(
+            url,
+            headers=headers,
+            timeout=timeout,
+            verify=verify,
+        )
+    except requests.exceptions.RequestException as error:
+        raise wrap_requests_error(method, url, error) from error
 
-            req = urllib.request.Request(url, data=data, headers=headers)
 
-            try:
-                if abroad:
-                    response = urllib.request.urlopen(req, timeout=timeout)
-                else:
-                    response = opener.open(req, timeout=timeout)
-                if redirect_url:
-                    return response.url
-                content_encoding = response.info().get('Content-Encoding')
-                try:
-                    if content_encoding == 'gzip':
-                        with gzip.open(response, 'rt', encoding=content_conding) as gzipped:
-                            resp_str = gzipped.read()
-                    else:
-                        resp_str = response.read().decode(content_conding)
-                finally:
-                    response.close()
-
-            except urllib.error.HTTPError as e:
-                if e.code == 400:
-                    resp_str = e.read().decode(content_conding)
-                else:
-                    raise
-            except urllib.error.URLError as e:
-                print(f"URL Error: {e}")
-                raise
-            except Exception as e:
-                print(f"An error occurred: {e}")
-                raise
-
-    except Exception as e:
-        resp_str = str(e)
-
-    return resp_str
+def sync_req(
+    url: str,
+    proxy_addr: OptionalStr = None,
+    headers: OptionalDict = None,
+    data: dict | bytes | None = None,
+    json_data: dict | list | None = None,
+    timeout: int = 20,
+    redirect_url: bool = False,
+    abroad: bool = False,
+    content_conding: str = "utf-8",
+    verify: bool = True,
+) -> str:
+    method = "POST" if data is not None or json_data is not None else "GET"
+    response = sync_fetch_response(
+        method,
+        url,
+        proxy_addr=proxy_addr,
+        headers=headers,
+        data=data,
+        json_data=json_data,
+        timeout=timeout,
+        abroad=abroad,
+        verify=verify,
+    )
+    if redirect_url:
+        return str(response.url)
+    response.encoding = content_conding
+    return response.text
