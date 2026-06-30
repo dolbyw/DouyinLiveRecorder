@@ -108,6 +108,7 @@ class DashboardView:
     first_sweep: str | None
     complete_prompt: str | None
     upload_detail: str | None = None
+    upload_summary: str | None = None
 
 
 RecordingStatsReader = Callable[[DashboardRoom], RecordingStats | None]
@@ -273,6 +274,7 @@ def build_dashboard_view(
             "按任意键退出 | Ctrl+C 强制退出" if snapshot.phase is AppDisplayPhase.COMPLETE else None
         ),
         upload_detail=_upload_detail(snapshot.upload) if upload_detail_expanded and snapshot.upload.enabled else None,
+        upload_summary=_upload_summary(snapshot.upload) if snapshot.upload.enabled else None,
     )
 
 
@@ -449,6 +451,11 @@ def _upload_detail(upload: DashboardUploadStatus) -> str:
         ]
         return "\n".join((detail, *rows)) if detail else "\n".join(rows)
     return detail
+
+
+def _upload_summary(upload: DashboardUploadStatus) -> str:
+    parts = [part for part in (upload.trigger, upload.target, upload.detail) if part]
+    return " · ".join(parts)
 
 
 def _upload_phase_label(phase: str) -> str:

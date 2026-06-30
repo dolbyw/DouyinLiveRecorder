@@ -7,6 +7,7 @@ from .service import (
     build_rclone_config_create_command,
     build_rclone_move_command,
     parse_rclone_duration_seconds,
+    prepare_upload_config_for_run,
     resolve_upload_source,
     seconds_until_next_daily_run,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "build_rclone_config_create_command",
     "build_rclone_move_command",
     "parse_rclone_duration_seconds",
+    "prepare_upload_config_for_run",
     "resolve_upload_source",
     "seconds_until_next_daily_run",
     "RcloneRcClient",

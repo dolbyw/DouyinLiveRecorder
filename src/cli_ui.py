@@ -83,7 +83,7 @@ def build_dashboard_renderable(view: DashboardView) -> Any:
     if not supports_rich_dashboard():
         return ""
     items: list[Any] = [_render_header(view), _render_config(view), _render_rooms(view), _render_activity(view)]
-    if view.upload_detail:
+    if view.upload_detail or view.upload_summary:
         items.insert(3, _render_upload(view))
     if view.complete_prompt:
         items.append(
@@ -98,9 +98,10 @@ def build_dashboard_renderable(view: DashboardView) -> Any:
 
 
 def _render_upload(view: DashboardView) -> Any:
+    expanded = bool(view.upload_detail)
     return Panel(
-        Text(view.upload_detail or "", style="cyan"),
-        title=Text("自动上传 · [U] 收起", style="bold white"),
+        Text(view.upload_detail or view.upload_summary or "", style="cyan"),
+        title=Text(f"自动上传 · [U] {'收起' if expanded else '展开'}", style="bold white"),
         border_style="bright_black",
         title_align="left",
         padding=(0, 1),
@@ -115,11 +116,8 @@ def _render_header(view: DashboardView) -> Any:
     title.append(f"  ● {view.phase}", style=_phase_style(view.phase))
     header.add_row(title, Text(f"{view.current_time}   已运行 {view.uptime}", style="dim"))
 
-    upload_health = tuple(item for item in view.health if item.label == "上传")
     core_health = tuple(item for item in view.health if item.label != "上传")
     header.add_row(_metrics_text(view), _health_text(core_health))
-    if upload_health:
-        header.add_row(Text(""), _health_text(upload_health))
     if view.first_sweep:
         header.add_row(Text(view.first_sweep, style="cyan"), Text(""))
     return Panel(header, border_style="bright_black", title_align="left", padding=(0, 1))
@@ -129,7 +127,6 @@ def _render_config(view: DashboardView) -> Any:
     content = Table.grid(expand=True)
     content.add_column(ratio=4)
     content.add_column(justify="right", ratio=2)
-    upload_items = tuple(item for item in view.config_items if item.startswith("上传 "))
     config_items = tuple(item for item in view.config_items if not item.startswith("上传 "))
     summary = Text(" · ".join(config_items), style="dim")
     path_width = 58 if view.width_mode is ViewWidth.WIDE else 28
@@ -137,8 +134,6 @@ def _render_config(view: DashboardView) -> Any:
     save_path.append("保存 ", style="dim")
     save_path.append(_truncate_path(view.save_path, path_width), style="white")
     content.add_row(summary, save_path)
-    for item in upload_items:
-        content.add_row(Text(item, style="dim"), Text(""))
     return Panel(
         content,
         title=Text("配置", style="bold white"),

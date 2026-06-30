@@ -84,7 +84,7 @@ from src.runtime import (
 from src.uploader import (
     RcloneRcUploadProgress,
     create_upload_service,
-    parse_rclone_duration_seconds,
+    prepare_upload_config_for_run,
     resolve_upload_source,
     seconds_until_next_daily_run,
 )
@@ -138,6 +138,7 @@ recording_time_list = {}
 script_path = os.path.split(os.path.realpath(sys.argv[0]))[0]
 config_file = f'{script_path}/config/config.ini'
 url_config_file = f'{script_path}/config/URL_config.ini'
+ini_URL_content = ''
 backup_dir = f'{script_path}/backup_config'
 text_encoding = 'utf-8-sig'
 rstr = r"[\/\\\:\*\？?\"\<\>\|&#.。,， ~！· ]"
@@ -435,7 +436,8 @@ def notify_recording_finished_upload() -> None:
 
 def upload_worker(upload_config: UploadConfig, recording_save_path: str, generation: int) -> None:
     source_path = resolve_upload_source(upload_config, recording_save_path, default_path)
-    upload_service = create_upload_service(upload_config, progress_callback=publish_upload_progress)
+    upload_config_for_run = prepare_upload_config_for_run(upload_config)
+    upload_service = create_upload_service(upload_config_for_run, progress_callback=publish_upload_progress)
     trigger = describe_upload_trigger(upload_config)
     while not exit_recording and upload_generation_active(generation):
         if upload_config.trigger_mode == "录制结束":
@@ -454,21 +456,6 @@ def upload_worker(upload_config: UploadConfig, recording_save_path: str, generat
                     break
             if exit_recording or not upload_generation_active(generation):
                 return
-            cooldown_seconds = parse_rclone_duration_seconds(upload_config.min_age)
-            if cooldown_seconds > 0:
-                publish_upload_status(
-                    DashboardUploadStatus(
-                        enabled=True,
-                        phase="idle",
-                        trigger=trigger,
-                        target=upload_config.remote_path,
-                        detail=f"等待文件冷却 {cooldown_seconds} 秒后上传",
-                    )
-                )
-                for _ in range(cooldown_seconds + 1):
-                    if exit_recording or not upload_generation_active(generation):
-                        return
-                    time.sleep(1)
         elif upload_config.trigger_mode != "间隔":
             wait_seconds = seconds_until_next_daily_run(upload_config.daily_time)
             publish_upload_status(
@@ -2209,10 +2196,10 @@ def check_ffmpeg_existence() -> bool:
 
 
 def main() -> int:
-    global initial_app_config, language, skip_proxy_check, global_proxy, video_save_path, folder_by_author, folder_by_time, folder_by_title, filename_by_title, clean_emoji, video_save_type, video_record_quality, use_proxy, proxy_addr_bak, proxy_addr, max_request, semaphore, delay_default, local_delay_default, loop_time, show_url, split_video_by_time, enable_https_recording, disk_space_limit, split_time, converts_to_mp4, converts_to_h264, delete_origin_file, create_time_file, is_run_script, custom_script, enable_proxy_platform_list, extra_enable_proxy_platform_list, live_status_push, dingtalk_api_url, xizhi_api_url, bark_msg_api, bark_msg_level, bark_msg_ring, dingtalk_phone_num
-    global dingtalk_is_atall, tg_token, tg_chat_id, email_host, open_smtp_ssl, smtp_port, login_email, email_password, sender_email, sender_name, to_email, ntfy_api, ntfy_tags, ntfy_email, pushplus_token, push_message_title, begin_push_message_text, over_push_message_text, disable_record, push_check_seconds, begin_show_push, over_show_push, sooplive_username, sooplive_password, flextv_username, flextv_password, popkontv_username, popkontv_partner_code, popkontv_password, twitcasting_account_type, twitcasting_username, twitcasting_password, popkontv_access_token, dy_cookie, ks_cookie, tiktok_cookie, hy_cookie, douyu_cookie, yy_cookie, bili_cookie
-    global xhs_cookie, bigo_cookie, blued_cookie, sooplive_cookie, netease_cookie, qiandurebo_cookie, pandatv_cookie, maoerfm_cookie, winktv_cookie, flextv_cookie, look_cookie, twitcasting_cookie, baidu_cookie, weibo_cookie, kugou_cookie, twitch_cookie, liveme_cookie, huajiao_cookie, liuxing_cookie, showroom_cookie, acfun_cookie, changliao_cookie, yinbo_cookie, yingke_cookie, zhihu_cookie, chzzk_cookie, haixiu_cookie, vvxqiu_cookie, yiqilive_cookie, langlive_cookie, pplive_cookie, six_room_cookie, lehaitv_cookie, huamao_cookie, shopee_cookie, youtube_cookie, taobao_cookie, jd_cookie, faceit_cookie, migu_cookie
-    global lianjie_cookie, laixiu_cookie, picarto_cookie, exit_recording, url_comments, text_no_repeat_url, monitoring, url_tuples_list, first_start, first_run
+    global initial_app_config, language, skip_proxy_check, global_proxy, video_save_path, folder_by_author, folder_by_time, folder_by_title, filename_by_title, clean_emoji, video_save_type, video_record_quality, use_proxy, proxy_addr_bak, proxy_addr, max_request, semaphore, delay_default, local_delay_default, loop_time, show_url, split_video_by_time, enable_https_recording, disk_space_limit, split_time, converts_to_mp4, converts_to_h264, delete_origin_file, create_time_file, is_run_script, custom_script, enable_proxy_platform_list, extra_enable_proxy_platform_list, live_status_push, dingtalk_api_url, xizhi_api_url, bark_msg_api, bark_msg_level, bark_msg_ring, dingtalk_phone_num  # noqa: E501
+    global dingtalk_is_atall, tg_token, tg_chat_id, email_host, open_smtp_ssl, smtp_port, login_email, email_password, sender_email, sender_name, to_email, ntfy_api, ntfy_tags, ntfy_email, pushplus_token, push_message_title, begin_push_message_text, over_push_message_text, disable_record, push_check_seconds, begin_show_push, over_show_push, sooplive_username, sooplive_password, flextv_username, flextv_password, popkontv_username, popkontv_partner_code, popkontv_password, twitcasting_account_type, twitcasting_username, twitcasting_password, popkontv_access_token, dy_cookie, ks_cookie, tiktok_cookie, hy_cookie, douyu_cookie, yy_cookie, bili_cookie  # noqa: E501
+    global xhs_cookie, bigo_cookie, blued_cookie, sooplive_cookie, netease_cookie, qiandurebo_cookie, pandatv_cookie, maoerfm_cookie, winktv_cookie, flextv_cookie, look_cookie, twitcasting_cookie, baidu_cookie, weibo_cookie, kugou_cookie, twitch_cookie, liveme_cookie, huajiao_cookie, liuxing_cookie, showroom_cookie, acfun_cookie, changliao_cookie, yinbo_cookie, yingke_cookie, zhihu_cookie, chzzk_cookie, haixiu_cookie, vvxqiu_cookie, yiqilive_cookie, langlive_cookie, pplive_cookie, six_room_cookie, lehaitv_cookie, huamao_cookie, shopee_cookie, youtube_cookie, taobao_cookie, jd_cookie, faceit_cookie, migu_cookie  # noqa: E501
+    global lianjie_cookie, laixiu_cookie, picarto_cookie, exit_recording, url_comments, text_no_repeat_url, monitoring, url_tuples_list, first_start, first_run, ini_URL_content  # noqa: E501
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -2245,7 +2232,8 @@ def main() -> int:
             global_proxy = True
         else:
             logger.debug('系统代理检测中，请耐心等待...')
-            response_g = urllib.request.urlopen("https://www.google.com/", timeout=15)
+            with urllib.request.urlopen("https://www.google.com/", timeout=15):
+                pass
             global_proxy = True
             logger.info('全局/规则网络代理已开启')
             pd = ProxyDetector()

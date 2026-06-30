@@ -143,6 +143,16 @@ def render(view, *, width):
     return buffer.getvalue()
 
 
+def panel_text(output: str, title: str) -> str:
+    lines = output.splitlines()
+    start = next(index for index, line in enumerate(lines) if title in line)
+    end = next(
+        (index for index in range(start + 1, len(lines)) if lines[index].startswith("└")),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
+
+
 def test_wide_dashboard_matches_approved_full_width_hierarchy():
     assert supports_rich_dashboard() is True
 
@@ -185,7 +195,29 @@ def test_wide_dashboard_uses_left_aligned_section_titles_and_labeled_config():
     assert "┤ 运行动态" not in output
     assert "配置" in output
     assert "保存" in output
-    assert "上传 空闲 录制结束 → 123pan:/LiveBackup/" in output
+    assert "自动上传 · [U] 展开" in output
+    assert "录制结束 · 123pan:/LiveBackup/" in output
+    assert "上传" not in panel_text(output, "配置")
+
+
+def test_collapsed_upload_status_has_discoverable_u_hint_without_header_wrap():
+    snapshot = replace(
+        dashboard_snapshot(),
+        upload=DashboardUploadStatus(
+            enabled=True,
+            phase="idle",
+            trigger="录制结束",
+            target="123pan:/LiveBackup/",
+            detail="等待录制结束",
+        ),
+    )
+    view = build_dashboard_view(snapshot, width=140, height=42, room_mode=RoomListMode.COMPACT)
+
+    output = render(view, width=140)
+
+    assert "自动上传 · [U] 展开" in output
+    assert "录制结束 · 123pan:/LiveBackup/ · 等待录制结束" in output
+    assert "✓ 上传" not in panel_text(output, "DouyinLiveRecorder")
 
 
 def test_medium_dashboard_merges_quality_into_detail():

@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -82,6 +82,12 @@ def resolve_upload_source(config: UploadConfig, recording_save_path: str, defaul
     if recording_save_path:
         return Path(recording_save_path)
     return Path(default_path)
+
+
+def prepare_upload_config_for_run(config: UploadConfig) -> UploadConfig:
+    if config.trigger_mode == "录制结束" and config.min_age != "0s":
+        return replace(config, min_age="0s")
+    return config
 
 
 def seconds_until_next_daily_run(daily_time: str, now: datetime | None = None) -> int:

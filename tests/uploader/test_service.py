@@ -8,6 +8,7 @@ from src.uploader.service import (
     build_rclone_config_create_command,
     build_rclone_move_command,
     parse_rclone_duration_seconds,
+    prepare_upload_config_for_run,
     resolve_upload_source,
     seconds_until_next_daily_run,
 )
@@ -37,6 +38,24 @@ def test_build_rclone_move_command_uses_safe_webdav_defaults(tmp_path):
         "-v",
         "--delete-empty-src-dirs",
     ]
+
+
+def test_recording_finished_upload_runs_without_min_age_filter():
+    config = UploadConfig(enabled=True, trigger_mode="录制结束", min_age="1h")
+
+    prepared = prepare_upload_config_for_run(config)
+
+    assert prepared.min_age == "0s"
+    assert config.min_age == "1h"
+
+
+def test_scheduled_upload_keeps_configured_min_age_filter():
+    config = UploadConfig(enabled=True, trigger_mode="间隔", min_age="1h")
+
+    prepared = prepare_upload_config_for_run(config)
+
+    assert prepared.min_age == "1h"
+    assert prepared is config
 
 
 def test_build_rclone_move_command_honors_custom_binary_and_dry_run(tmp_path):
