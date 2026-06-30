@@ -90,6 +90,7 @@ def build_dashboard_renderable(view: DashboardView) -> Any:
             Panel(
                 Text(view.complete_prompt, style="bold green", justify="center"),
                 border_style="green",
+                title_align="left",
                 padding=(0, 1),
             )
         )
@@ -101,6 +102,7 @@ def _render_upload(view: DashboardView) -> Any:
         Text(view.upload_detail or "", style="cyan"),
         title=Text("自动上传 · [U] 收起", style="bold white"),
         border_style="bright_black",
+        title_align="left",
         padding=(0, 1),
     )
 
@@ -113,32 +115,37 @@ def _render_header(view: DashboardView) -> Any:
     title.append(f"  ● {view.phase}", style=_phase_style(view.phase))
     header.add_row(title, Text(f"{view.current_time}   已运行 {view.uptime}", style="dim"))
 
-    metrics = Text()
-    for index, metric in enumerate(view.metrics):
-        if index:
-            metrics.append("    ")
-        metrics.append(metric.value, style=f"bold {_KIND_STYLES[metric.kind]}")
-        metrics.append(f" {metric.label}", style="dim")
-    health = Text(justify="right")
-    for index, item in enumerate(view.health):
-        if item.label == "自动恢复" and item.value == "0":
-            continue
-        if index:
-            health.append("    ")
-        health.append("✓ " if item.healthy else "! ", style="green" if item.healthy else "bold red")
-        health.append(f"{item.label} {item.value}", style="dim" if item.healthy else "bold red")
-    header.add_row(metrics, health)
+    upload_health = tuple(item for item in view.health if item.label == "上传")
+    core_health = tuple(item for item in view.health if item.label != "上传")
+    header.add_row(_metrics_text(view), _health_text(core_health))
+    if upload_health:
+        header.add_row(Text(""), _health_text(upload_health))
     if view.first_sweep:
         header.add_row(Text(view.first_sweep, style="cyan"), Text(""))
-    return Panel(header, border_style="bright_black", padding=(0, 1))
+    return Panel(header, border_style="bright_black", title_align="left", padding=(0, 1))
 
 
 def _render_config(view: DashboardView) -> Any:
-    line = Text("   ".join(view.config_items), style="dim")
-    if view.width_mode is not ViewWidth.NARROW:
-        line.append("   ")
-        line.append(_truncate_path(view.save_path, 48 if view.width_mode is ViewWidth.WIDE else 24), style="dim")
-    return line
+    content = Table.grid(expand=True)
+    content.add_column(ratio=4)
+    content.add_column(justify="right", ratio=2)
+    upload_items = tuple(item for item in view.config_items if item.startswith("上传 "))
+    config_items = tuple(item for item in view.config_items if not item.startswith("上传 "))
+    summary = Text(" · ".join(config_items), style="dim")
+    path_width = 58 if view.width_mode is ViewWidth.WIDE else 28
+    save_path = Text()
+    save_path.append("保存 ", style="dim")
+    save_path.append(_truncate_path(view.save_path, path_width), style="white")
+    content.add_row(summary, save_path)
+    for item in upload_items:
+        content.add_row(Text(item, style="dim"), Text(""))
+    return Panel(
+        content,
+        title=Text("配置", style="bold white"),
+        border_style="bright_black",
+        title_align="left",
+        padding=(0, 1),
+    )
 
 
 def _render_rooms(view: DashboardView) -> Any:
@@ -156,12 +163,17 @@ def _render_rooms(view: DashboardView) -> Any:
     else:
         content = Table(expand=True, show_header=True, header_style="dim", box=None, padding=(0, 1))
         content.add_column("#", width=3, justify="right")
-        content.add_column("名称 / 平台", ratio=2, overflow="ellipsis", no_wrap=True)
-        content.add_column("状态", width=10)
+        content.add_column(
+            "名称 / 平台",
+            width=38 if view.width_mode is ViewWidth.WIDE else 28,
+            overflow="ellipsis",
+            no_wrap=True,
+        )
+        content.add_column("状态", width=12)
         if view.width_mode is ViewWidth.WIDE:
-            content.add_column("质量", width=7)
-        content.add_column("时长 / 进度", width=16, overflow="ellipsis", no_wrap=True)
-        content.add_column("详情", ratio=2, overflow="ellipsis", no_wrap=True)
+            content.add_column("质量", width=6)
+        content.add_column("时长 / 进度", width=14, overflow="ellipsis", no_wrap=True)
+        content.add_column("详情", ratio=3, overflow="ellipsis", no_wrap=True)
         for room in view.rooms:
             detail = room.detail
             row: list[Any] = [
@@ -178,7 +190,7 @@ def _render_rooms(view: DashboardView) -> Any:
     footer = Text()
     if view.hidden_room_count:
         footer.append(f"还有 {view.hidden_room_count} 个房间未显示", style="dim")
-    return Panel(Group(content, footer), title=title, border_style="bright_black", padding=(0, 1))
+    return Panel(Group(content, footer), title=title, border_style="bright_black", title_align="left", padding=(0, 1))
 
 
 def _render_activity(view: DashboardView) -> Any:
@@ -238,7 +250,30 @@ def _render_activity(view: DashboardView) -> Any:
     actionable = sum(incident.kind == "danger" for incident in view.incidents)
     automatic = sum(incident.kind == "warning" for incident in view.incidents)
     title = Text(f"运行动态  需处理 {actionable} · 自动恢复 {automatic}", style="bold white")
-    return Panel(Group(*blocks), title=title, border_style="bright_black", padding=(0, 1))
+    return Panel(Group(*blocks), title=title, border_style="bright_black", title_align="left", padding=(0, 1))
+
+
+def _metrics_text(view: DashboardView) -> Text:
+    metrics = Text()
+    for index, metric in enumerate(view.metrics):
+        if index:
+            metrics.append("    ")
+        metrics.append(metric.value, style=f"bold {_KIND_STYLES[metric.kind]}")
+        metrics.append(f" {metric.label}", style="dim")
+    return metrics
+
+
+def _health_text(items, *, prefix: str = "") -> Text:
+    health = Text(justify="right")
+    if prefix:
+        health.append(prefix, style="dim")
+    visible_items = tuple(item for item in items if not (item.label == "自动恢复" and item.value == "0"))
+    for index, item in enumerate(visible_items):
+        if index:
+            health.append("    ")
+        health.append("✓ " if item.healthy else "! ", style="green" if item.healthy else "bold red")
+        health.append(f"{item.label} {item.value}", style="dim" if item.healthy else "bold red")
+    return health
 
 
 def build_plain_dashboard(view: DashboardView) -> str:

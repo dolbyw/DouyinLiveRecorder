@@ -1,6 +1,6 @@
 ![video_spider](https://socialify.git.ci/ihmily/DouyinLiveRecorder/image?font=Inter&forks=1&language=1&owner=1&pattern=Circuit%20Board&stargazers=1&theme=Light)
 
-## 💡简介
+## 简介
 [![Python Version](https://img.shields.io/badge/python-3.11.6-blue.svg)](https://www.python.org/downloads/release/python-3116/)
 [![Supported Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux-blue.svg)](https://github.com/ihmily/DouyinLiveRecorder)
 [![Docker Pulls](https://img.shields.io/docker/pulls/ihmily/douyin-live-recorder?label=Docker%20Pulls&color=blue&logo=docker)](https://hub.docker.com/r/ihmily/douyin-live-recorder/tags)
@@ -8,11 +8,11 @@
 [![Latest Release](https://img.shields.io/github/v/release/ihmily/DouyinLiveRecorder)](https://github.com/ihmily/DouyinLiveRecorder/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/ihmily/DouyinLiveRecorder/total)](https://github.com/ihmily/DouyinLiveRecorder/releases/latest)
 
-一款**简易**的可循环值守的直播录制工具，基于FFmpeg实现多平台直播源录制，支持自定义配置录制以及直播状态推送。
+DouyinLiveRecorder 是一款可循环值守的直播录制工具，基于 FFmpeg 实现多平台直播源录制，支持多人监控、自动转码、运行状态仪表盘、直播状态推送，以及录制完成后的自动上传。
 
 </div>
 
-## 😺已支持平台
+## 已支持平台
 
 - [x] 抖音
 - [x] TikTok
@@ -69,59 +69,61 @@
 
 </div>
 
-## 🎈项目结构
+## 项目结构
 
 ```
 .
 └── DouyinLiveRecorder/
-    ├── /config -> (config record)
-    ├── /logs -> (save runing log file)
-    ├── /backup_config -> (backup file)
-    ├── /douyinliverecorder -> (package)
-        ├── initializer.py-> (check and install nodejs)
-    	├── spider.py-> (get live data)
-    	├── stream.py-> (get live stream address)
-    	├── utils.py -> (contains utility functions)
-    	├── logger.py -> (logger handdle)
-    	├── room.py -> (get room info)
-    	├── ab_sign.py-> (generate dy token)
-    	├── /javascript -> (some decrypt code)
-    ├── main.py -> (main file)
-    ├── ffmpeg_install.py -> (ffmpeg install script)
-    ├── demo.py -> (call package test demo)
-    ├── msg_push.py -> (send live status update message)
-    ├── ffmpeg.exe -> (record video)
-    ├── index.html -> (play m3u8 and flv video)
-    ├── requirements.txt -> (library dependencies)
-    ├── docker-compose.yaml -> (Container Orchestration File)
-    ├── Dockerfile -> (Application Build Recipe)
-    ├── StopRecording.vbs -> (stop recording script on Windows)
+    ├── config/              # 配置文件目录
+    ├── logs/                # 运行日志目录
+    ├── backup_config/       # 配置备份目录
+    ├── src/                 # 主程序源码
+    │   ├── initializer.py   # 运行环境检测与初始化
+    │   ├── spider.py        # 获取直播间数据
+    │   ├── stream.py        # 获取直播流地址
+    │   ├── utils.py         # 通用工具函数
+    │   ├── logger.py        # 日志封装
+    │   ├── room.py          # 直播间信息解析
+    │   ├── ab_sign.py       # 抖音签名参数生成
+    │   ├── uploader/        # 自动上传服务
+    │   └── javascript/      # 平台解密与签名脚本
+    ├── main.py              # 程序入口
+    ├── ffmpeg_install.py    # FFmpeg 安装辅助脚本
+    ├── demo.py              # 调用示例
+    ├── msg_push.py          # 直播状态推送
+    ├── index.html           # m3u8/flv 播放测试页
+    ├── requirements.txt     # 运行依赖
+    ├── docker-compose.yaml  # Docker Compose 配置
+    ├── Dockerfile           # Docker 镜像构建文件
+    ├── DouyinLiveRecorder.spec # Windows 打包配置
+    ├── StopRecording.vbs    # Windows 停止录制脚本
     ...
 ```
 
 </div>
 
-## 🌱使用说明
+## 使用说明
 
-- 对于只想使用录制软件的小白用户，进入[Releases](https://github.com/ihmily/DouyinLiveRecorder/releases) 中下载最新发布的 zip压缩包即可，里面有打包好的录制软件。（有些电脑可能会报毒，直接忽略即可，如果下载时被浏览器屏蔽，请更换浏览器下载）
+- 如果只想直接使用软件，可以进入 [Releases](https://github.com/ihmily/DouyinLiveRecorder/releases) 下载最新发布的 zip 压缩包，里面包含已经打包好的可执行程序。（部分安全软件可能误报，请根据实际情况判断；如果浏览器拦截下载，可以更换浏览器或手动放行。）
 
-- 压缩包解压后，在 `config` 文件夹内的 `URL_config.ini` 中添加录制直播间地址，一行一个直播间地址。如果要自定义配置录制，可以修改`config.ini` 文件，推荐将录制格式修改为`ts`。
-- 以上步骤都做好后，就可以运行`DouyinLiveRecorder.exe` 程序进行录制了。录制的视频文件保存在同目录下的 `downloads` 文件夹内。
+- 解压后，在 `config/URL_config.ini` 中添加要录制的直播间地址，一行一个地址。如果需要调整录制参数，可以修改 `config/config.ini`，推荐录制格式使用 `ts`。
+- 配置完成后运行 `DouyinLiveRecorder.exe` 即可开始监控和录制。默认录制文件保存在程序同目录的 `downloads` 文件夹中。
 
-- 另外，如果需要录制TikTok、AfreecaTV等海外平台，请在配置文件中设置开启代理并添加proxy_addr链接 如：`127.0.0.1:7890` （这只是示例地址，具体根据实际填写）。
+- 如果需要录制 TikTok、SOOP 等海外平台，请在配置文件中开启代理并填写 `proxy_addr`，例如 `127.0.0.1:7890`（仅为示例，请按实际代理地址填写）。
 
-- 假如`URL_config.ini`文件中添加的直播间地址，有个别直播间暂时不想录制又不想移除链接，可以在对应直播间的链接开头加上`#`，那么将停止该直播间的监测以及录制。
+- 如果 `URL_config.ini` 中的某个直播间暂时不想录制，又不想删除配置，可以在该行开头加上 `#`，程序会停止监测和录制该直播间。
 
-- 软件默认录制清晰度为 `原画` ，如果要单独设置某个直播间的录制画质，可以在添加直播间地址时前面加上画质即可，如`超清，https://live.douyin.com/745964462470` 记得中间要有`,` 分隔。
+- 软件默认录制清晰度为 `原画`。如果要单独设置某个直播间的录制画质，可以在直播间地址前加画质名称，例如 `超清,https://live.douyin.com/745964462470`，中间使用英文逗号分隔。
 
-- 如果要长时间挂着软件循环监测直播，最好循环时间设置长一点（咱也不差没录制到的那几分钟），避免因请求频繁导致被官方封禁IP 。
+- 如果要长时间循环监测直播，建议把检测间隔设置得稍长一些，避免请求过于频繁导致平台限制访问。
 
-- 要停止直播录制，Windows平台可执行StopRecording.vbs脚本文件，或者在录制界面使用 `Ctrl+C ` 组合键中断录制，若要停止其中某个直播间的录制，可在`URL_config.ini`文件中的地址前加#，会自动停止对应直播间的录制并正常保存已录制的视频。
-- 最后，欢迎右上角给本项目一个star，同时也非常乐意大家提交pr。
+- 要停止所有录制，Windows 平台可以运行 `StopRecording.vbs`，也可以在控制台中使用 `Ctrl+C` 中断程序。若只想停止某个直播间，请在 `URL_config.ini` 中把对应地址前加上 `#`，程序会正常结束该直播间录制并保存已有文件。
+- 程序启动后会显示终端仪表盘，主界面包含直播间状态、录制时长、磁盘占用、上传状态和最近运行动态。按 `R` 可切换直播间列表显示数量，按 `U` 可查看或收起上传详情。
+- 欢迎给项目点 Star，也欢迎提交 Pull Request。
 
 ### 自动上传到 WebDAV 网盘
 
-程序支持通过已安装的 [Rclone](https://rclone.org/) 将录制完成的历史文件自动移动到 WebDAV 网盘，例如提前通过 `rclone config` 配置好的 `123pan` 远程端。上传功能默认关闭；开启后可在控制台仪表盘的健康区和运行动态中查看上传状态，按 `U` 可展开/收起上传详情。
+程序支持通过 [Rclone](https://rclone.org/) 将录制完成的历史文件自动移动到 WebDAV 网盘，例如提前通过 `rclone config` 配置好的 `123pan` 远程端。上传功能默认关闭；开启后可在控制台仪表盘的健康区、配置区和运行动态中查看上传状态，按 `U` 可查看或收起上传详情。
 
 在 `config/config.ini` 中添加或修改：
 
