@@ -13,6 +13,7 @@ from .dashboard_state import (
     DashboardIncident,
     DashboardRoom,
     DashboardSnapshot,
+    DashboardUploadStatus,
     RoomDisplayStatus,
 )
 
@@ -106,6 +107,7 @@ class DashboardView:
     hidden_event_count: int
     first_sweep: str | None
     complete_prompt: str | None
+    upload_detail: str | None = None
 
 
 RecordingStatsReader = Callable[[DashboardRoom], RecordingStats | None]
@@ -137,6 +139,11 @@ _EVENT_VIEW = {
     "conversion_finished": ("处理完成", "info"),
     "conversion_failed": ("处理失败", "danger"),
     "recording_error": ("录制异常", "danger"),
+    "upload_started": ("上传开始", "info"),
+    "upload_finished": ("上传完成", "success"),
+    "upload_partial": ("部分上传", "warning"),
+    "upload_failed": ("上传失败", "danger"),
+    "upload_skipped": ("上传跳过", "dim"),
     "incident_recovered": ("已恢复", "success"),
     "room_added": ("加入监控", "info"),
     "disabled": ("已停用", "dim"),
@@ -178,6 +185,7 @@ def build_dashboard_view(
     width: int,
     height: int,
     room_mode: RoomListMode,
+    upload_detail_expanded: bool = False,
     recording_stats: RecordingStatsReader | None = None,
 ) -> DashboardView:
     reader = recording_stats or read_recording_stats
@@ -239,6 +247,7 @@ def build_dashboard_view(
             snapshot.config.disk_free_gb is None or snapshot.config.disk_free_gb > 1,
         ),
         HealthView("自动恢复", str(automatic_count), True),
+        _upload_health(snapshot.upload),
     )
     return DashboardView(
         width_mode=classify_width(width),
@@ -250,7 +259,7 @@ def build_dashboard_view(
         ),
         metrics=metrics,
         health=health,
-        config_items=_config_items(snapshot.config),
+        config_items=_config_items(snapshot.config, snapshot.upload),
         save_path=snapshot.config.save_path,
         rooms=room_rows,
         hidden_room_count=len(snapshot.rooms) - len(room_rows),
@@ -263,6 +272,7 @@ def build_dashboard_view(
         complete_prompt=(
             "按任意键退出 | Ctrl+C 强制退出" if snapshot.phase is AppDisplayPhase.COMPLETE else None
         ),
+        upload_detail=_upload_detail(snapshot.upload) if upload_detail_expanded and snapshot.upload.enabled else None,
     )
 
 
@@ -388,21 +398,82 @@ def read_recording_stats(room: DashboardRoom) -> RecordingStats | None:
     return RecordingStats(size_bytes=size, bitrate_mbps=size * 8 / elapsed / 1_000_000)
 
 
-def _config_items(config: DashboardConfig) -> tuple[str, ...]:
+def _config_items(config: DashboardConfig, upload: DashboardUploadStatus | None = None) -> tuple[str, ...]:
     save_format = (
         f"{config.save_format} → MP4"
         if config.save_format.upper() == "TS" and config.convert_to_mp4
         else config.save_format
     )
     split = "关闭" if not config.split_seconds else _human_duration(config.split_seconds)
-    return (
+    items = [
         save_format,
         config.quality,
         f"分段 {split}",
         f"检测 {config.poll_seconds} 秒",
         f"并发 {config.max_requests}",
         f"代理 {'开' if config.use_proxy else '关'}",
-    )
+    ]
+    if upload is not None and upload.enabled:
+        items.append(f"上传 {_upload_phase_label(upload.phase)} {upload.trigger} → {upload.target}")
+    return tuple(items)
+
+
+def _upload_health(upload: DashboardUploadStatus) -> HealthView:
+    if not upload.enabled:
+        return HealthView("上传", "关闭", True)
+    labels = {
+        "idle": "空闲",
+        "running": "运行中",
+        "success": "完成",
+        "partial": "部分完成",
+        "skipped": "无文件",
+        "failed": "异常",
+        "disabled": "关闭",
+    }
+    return HealthView("上传", labels.get(upload.phase, upload.phase or "未知"), upload.phase != "failed")
+
+
+def _upload_detail(upload: DashboardUploadStatus) -> str:
+    parts = [part for part in (upload.trigger, upload.target, upload.detail) if part]
+    if upload.retry_limit:
+        parts.append(f"重试 {upload.attempts}/{upload.retry_limit}")
+    detail = " · ".join(parts)
+    if upload.records:
+        rows = [
+            "最近记录",
+            *(
+                f"{record.at:%H:%M:%S} {_upload_phase_label(record.phase)} "
+                f"{_upload_record_stats(record)}{record.message}".strip()
+                for record in upload.records[:5]
+            ),
+        ]
+        return "\n".join((detail, *rows)) if detail else "\n".join(rows)
+    return detail
+
+
+def _upload_phase_label(phase: str) -> str:
+    labels = {
+        "idle": "空闲",
+        "running": "运行中",
+        "success": "完成",
+        "partial": "部分完成",
+        "skipped": "无文件",
+        "failed": "异常",
+        "disabled": "关闭",
+    }
+    return labels.get(phase, phase or "未知")
+
+
+def _upload_record_stats(record) -> str:
+    if record.files_total <= 0:
+        return ""
+    summary = f"{record.files_total} 个文件 / {_format_bytes(record.bytes_total)}"
+    if record.files_remaining:
+        summary = (
+            f"{summary}，剩余 {record.files_remaining} 个 / "
+            f"{_format_bytes(record.bytes_remaining)}"
+        )
+    return f"{summary}，"
 
 
 def _first_sweep(snapshot: DashboardSnapshot) -> str | None:

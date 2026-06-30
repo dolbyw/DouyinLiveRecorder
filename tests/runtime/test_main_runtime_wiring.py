@@ -247,6 +247,7 @@ def test_dashboard_refresh_builds_one_shared_presentation_view_with_terminal_dim
     assert "width=dashboard.console.size.width" in source
     assert "height=dashboard.console.size.height" in source
     assert "room_mode=dashboard_input.room_mode" in source
+    assert "upload_detail_expanded=dashboard_input.upload_detail_expanded" in source
     assert "dashboard.update(view)" in source
 
 
@@ -275,6 +276,53 @@ def test_retry_and_recovery_paths_report_and_clear_stable_incidents():
     assert "dashboard_store.clear_incident(" in source
     assert '"probe"' in source
     assert '"recording-connection"' in source
+
+
+def test_main_wires_auto_upload_config_status_and_service():
+    source = MAIN_PATH.read_text(encoding="utf-8")
+
+    assert "create_upload_service" in source
+    assert "resolve_upload_source" in source
+    assert "parse_rclone_duration_seconds" in source
+    assert "def start_upload_service" in source
+    assert "upload_config = current_config.upload" in source
+    assert "dashboard_store.set_upload(" in source
+    assert "DashboardUploadStatus(" in source
+    assert "resolve_upload_source(upload_config, recording_save_path, default_path)" in source
+    assert "create_upload_service(upload_config, progress_callback=publish_upload_progress)" in source
+    assert "target=upload_worker" in source
+    assert "start_upload_service(app_config.upload, recording_cfg.save_path)" in source
+    assert "def publish_upload_progress" in source
+    assert "def format_upload_progress" in source
+    assert "def format_upload_bytes" in source
+
+
+def test_main_upload_service_supports_config_hot_reload_generations():
+    source = MAIN_PATH.read_text(encoding="utf-8")
+
+    assert "def upload_config_signature" in source
+    assert "upload_service_generation" in source
+    assert "upload_service_signature" in source
+    assert "def upload_generation_active" in source
+    assert "upload_generation_active(generation)" in source
+    assert "upload_service_generation += 1" in source
+    assert "args=(upload_config, recording_save_path, upload_service_generation)" in source
+
+
+def test_auto_upload_can_be_triggered_after_successful_recording_finishes():
+    source = MAIN_PATH.read_text(encoding="utf-8")
+    start_source = start_record_source()
+
+    assert "upload_recording_finished_event = threading.Event()" in source
+    assert "def notify_recording_finished_upload()" in source
+    assert "upload_recording_finished_event.wait(1)" in source
+    assert "cooldown_seconds = parse_rclone_duration_seconds(upload_config.min_age)" in source
+    assert "等待文件冷却" in source
+    assert 'upload_config.trigger_mode == "录制结束"' in source
+    assert "notify_recording_finished_upload()" in start_source
+    success_check_index = start_source.index("result.process.reason.is_success")
+    upload_notify_index = start_source.index("notify_recording_finished_upload()")
+    assert success_check_index < upload_notify_index
 
 
 def test_short_recording_completion_logs_raw_ffmpeg_tail():

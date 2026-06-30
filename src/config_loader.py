@@ -15,10 +15,22 @@ from .models import (
     QualityLevel,
     RecordingConfig,
     SaveType,
+    UploadConfig,
     UrlConfigEntry,
 )
 
-CONFIG_SECTIONS = ("录制设置", "推送配置", "Cookie", "Authorization", "账号密码")
+CONFIG_SECTIONS = (
+    "录制设置",
+    "推送配置",
+    "Cookie",
+    "Authorization",
+    "账号密码",
+    "自动上传",
+    "自动上传-录制结束",
+    "自动上传-每日定时",
+    "自动上传-间隔检查",
+    "自动上传-WebDAV",
+)
 OPTIONS = {"是": True, "否": False}
 
 COOKIE_KEYS = (
@@ -224,11 +236,46 @@ def _read_int(config: configparser.RawConfigParser, section: str, option: str, d
         return default
 
 
+def _read_min_int(
+    config: configparser.RawConfigParser,
+    section: str,
+    option: str,
+    default: int,
+    minimum: int,
+) -> int:
+    return max(minimum, _read_int(config, section, option, default))
+
+
 def _read_float(config: configparser.RawConfigParser, section: str, option: str, default: float) -> float:
     try:
         return float(_read_string(config, section, option, str(default)))
     except ValueError:
         return default
+
+
+def _normalize_upload_trigger(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"间隔", "间隔检查", "interval", "interval_check"}:
+        return "间隔"
+    if normalized in {"定时", "每日定时", "daily", "scheduled", "schedule"}:
+        return "定时"
+    return "录制结束"
+
+
+def _read_upload_trigger(config: configparser.RawConfigParser) -> str:
+    requested = _normalize_upload_trigger(_read_string(config, "自动上传", "上传触发模式", "录制结束"))
+    enabled_sections = [
+        trigger
+        for trigger, section in (
+            ("录制结束", "自动上传-录制结束"),
+            ("定时", "自动上传-每日定时"),
+            ("间隔", "自动上传-间隔检查"),
+        )
+        if _read_bool(config, section, "是否启用", False)
+    ]
+    if len(enabled_sections) == 1:
+        return enabled_sections[0]
+    return requested
 
 
 def _read_csv(config: configparser.RawConfigParser, section: str, option: str, default: str = "") -> tuple[str, ...]:
@@ -429,10 +476,47 @@ def load_app_config(config_path: str, encoding: str = "utf-8-sig") -> AppConfig:
         values={key: _read_string(config, "Cookie", key, "") for key in COOKIE_KEYS},
     )
 
+    upload_trigger = _read_upload_trigger(config)
+    legacy_daily_time = _read_string(config, "自动上传", "每日定时上传时间", "03:00")
+    legacy_interval_seconds = _read_min_int(config, "自动上传", "上传检查间隔(秒)", 300, 1)
+    upload = UploadConfig(
+        enabled=_read_bool(config, "自动上传", "是否启用自动上传", False),
+        execution_mode=_read_string(config, "自动上传", "上传执行方式", "rc"),
+        trigger_mode=upload_trigger,
+        daily_time=(
+            _read_string(config, "自动上传-每日定时", "每日定时上传时间", legacy_daily_time)
+            if upload_trigger == "定时"
+            else legacy_daily_time
+        ),
+        interval_seconds=(
+            _read_min_int(config, "自动上传-间隔检查", "上传检查间隔(秒)", legacy_interval_seconds, 1)
+            if upload_trigger == "间隔"
+            else legacy_interval_seconds
+        ),
+        source_path=_read_string(config, "自动上传", "上传源目录(不填则跟随直播保存路径)", ""),
+        remote_path=_read_string(config, "自动上传", "上传目标路径", "123pan:/LiveBackup/"),
+        rclone_path=_read_string(config, "自动上传", "rclone可执行文件路径", ""),
+        rc_port=_read_min_int(config, "自动上传", "rclone控制端口", 5572, 1),
+        min_age=_read_string(config, "自动上传", "最小文件冷却时间", "1h"),
+        transfers=_read_min_int(config, "自动上传", "上传并发数", 2, 1),
+        checkers=_read_min_int(config, "自动上传", "检查并发数", 2, 1),
+        rclone_retries=_read_min_int(config, "自动上传", "rclone失败重试次数", 3, 0),
+        app_retries=_read_min_int(config, "自动上传", "应用层失败重试次数", 3, 0),
+        retry_sleep_seconds=_read_min_int(config, "自动上传", "失败后等待秒数", 900, 0),
+        webdav_remote_name=_read_string(config, "自动上传-WebDAV", "远程名称", ""),
+        webdav_url=_read_string(config, "自动上传-WebDAV", "WebDAV地址", ""),
+        webdav_username=_read_string(config, "自动上传-WebDAV", "WebDAV用户名", ""),
+        webdav_password=_read_string(config, "自动上传-WebDAV", "WebDAV密码", ""),
+        webdav_vendor=_read_string(config, "自动上传-WebDAV", "WebDAV厂商", "other") or "other",
+        delete_empty_dirs=_read_bool(config, "自动上传", "上传完成后删除空目录", True),
+        dry_run=_read_bool(config, "自动上传", "演练模式dry-run", False),
+    )
+
     return AppConfig(
         recording=recording,
         push=push,
         authorization=authorization,
         accounts=accounts,
         cookies=cookies,
+        upload=upload,
     )

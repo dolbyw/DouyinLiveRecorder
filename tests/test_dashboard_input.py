@@ -26,6 +26,18 @@ def test_other_keys_are_ignored_and_disabled_controller_cannot_toggle():
     assert controller.room_mode is RoomListMode.COMPACT
 
 
+def test_u_toggles_upload_detail_and_wakes_dashboard():
+    wakes = []
+    controller = DashboardInputController(on_change=lambda: wakes.append(True))
+
+    assert controller.upload_detail_expanded is False
+    assert controller.handle_key("u") is True
+    assert controller.upload_detail_expanded is True
+    assert wakes == [True]
+    assert controller.handle_key("U") is True
+    assert controller.upload_detail_expanded is False
+
+
 def test_noninteractive_reader_does_not_start():
     controller = DashboardInputController(on_change=lambda: None)
     reader = DashboardKeyReader(

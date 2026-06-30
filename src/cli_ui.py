@@ -83,6 +83,8 @@ def build_dashboard_renderable(view: DashboardView) -> Any:
     if not supports_rich_dashboard():
         return ""
     items: list[Any] = [_render_header(view), _render_config(view), _render_rooms(view), _render_activity(view)]
+    if view.upload_detail:
+        items.insert(3, _render_upload(view))
     if view.complete_prompt:
         items.append(
             Panel(
@@ -92,6 +94,15 @@ def build_dashboard_renderable(view: DashboardView) -> Any:
             )
         )
     return Group(*items)
+
+
+def _render_upload(view: DashboardView) -> Any:
+    return Panel(
+        Text(view.upload_detail or "", style="cyan"),
+        title=Text("自动上传 · [U] 收起", style="bold white"),
+        border_style="bright_black",
+        padding=(0, 1),
+    )
 
 
 def _render_header(view: DashboardView) -> Any:
@@ -245,6 +256,8 @@ def build_plain_dashboard(view: DashboardView) -> str:
             f"{room.index} {room.name}·{room.platform} | {room.status} | "
             f"{room.quality} | {room.progress} | {room.detail}"
         )
+    if view.upload_detail:
+        lines.append(f"自动上传 | {view.upload_detail}")
     if view.hidden_room_count:
         lines.append(f"还有 {view.hidden_room_count} 个房间未显示")
     lines.append("运行动态")

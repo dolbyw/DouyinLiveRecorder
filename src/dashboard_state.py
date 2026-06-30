@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import threading
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
 from urllib.parse import urlsplit
@@ -66,6 +66,30 @@ class DashboardConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DashboardUploadRecord:
+    phase: str
+    message: str
+    at: datetime
+    attempts: int = 0
+    files_total: int = 0
+    bytes_total: int = 0
+    files_remaining: int = 0
+    bytes_remaining: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardUploadStatus:
+    enabled: bool = False
+    phase: str = "disabled"
+    trigger: str = ""
+    target: str = ""
+    detail: str = ""
+    attempts: int = 0
+    retry_limit: int = 0
+    records: tuple[DashboardUploadRecord, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardRoom:
     room_id: str
     index: int
@@ -126,6 +150,7 @@ class DashboardSnapshot:
     first_sweep_completed: int = 0
     first_sweep_started_at: datetime | None = None
     first_sweep_completed_at: datetime | None = None
+    upload: DashboardUploadStatus = field(default_factory=DashboardUploadStatus)
 
     @property
     def recording_count(self) -> int:
@@ -170,6 +195,7 @@ class DashboardStateStore:
         self._ffmpeg_ready = True
         self._started_at = started_at or datetime.now().astimezone()
         self._phase = AppDisplayPhase.RUNNING
+        self._upload = DashboardUploadStatus()
         self._first_sweep_room_ids: set[str] = set()
         self._first_sweep_started_at: datetime | None = None
         self._first_sweep_completed_at: datetime | None = None
@@ -188,6 +214,10 @@ class DashboardStateStore:
         with self._lock:
             self._error_count = max(0, error_count)
             self._ffmpeg_ready = ffmpeg_ready
+
+    def set_upload(self, upload: DashboardUploadStatus) -> None:
+        with self._lock:
+            self._upload = upload
 
     def reconcile_rooms(self, rooms: tuple[RoomSpec, ...] | list[RoomSpec]) -> None:
         with self._lock:
@@ -499,6 +529,7 @@ class DashboardStateStore:
                 ),
                 first_sweep_started_at=self._first_sweep_started_at,
                 first_sweep_completed_at=self._first_sweep_completed_at,
+                upload=self._upload,
             )
 
     def _complete_first_sweep_if_ready(self, at: datetime | None = None) -> None:

@@ -43,12 +43,14 @@ from src.dashboard_state import (
     DashboardConfig,
     DashboardSnapshot,
     DashboardStateStore,
+    DashboardUploadRecord,
+    DashboardUploadStatus,
 )
 from src.dashboard_view import RoomListMode, build_dashboard_view
 from src.http_clients.client_pool import close_async_clients_for_current_loop
 from src.http_clients.runner import run_async, run_async_batch
 from src.logger import disable_console_logging
-from src.models import normalize_stream_info
+from src.models import UploadConfig, normalize_stream_info
 from src.platforms import DispatchResult, default_registry, try_resolve
 from src.proxy import ProxyDetector
 from src.recorder import (
@@ -78,6 +80,13 @@ from src.runtime import (
     calculate_legacy_first_start_spacing,
     parse_room_config_lines,
     wait_for_exit_key,
+)
+from src.uploader import (
+    RcloneRcUploadProgress,
+    create_upload_service,
+    parse_rclone_duration_seconds,
+    resolve_upload_source,
+    seconds_until_next_daily_run,
 )
 from src.utils import logger
 
@@ -143,6 +152,12 @@ dashboard_store = DashboardStateStore(started_at=start_display_time)
 dashboard_input = DashboardInputController(on_change=dashboard_refresh_event.set)
 dashboard_key_reader: DashboardKeyReader | None = None
 recording_size_cache = RecordingDirectorySizeCache()
+upload_service_lock = threading.Lock()
+upload_status_lock = threading.Lock()
+upload_recording_finished_event = threading.Event()
+upload_dashboard_status = DashboardUploadStatus()
+upload_service_generation = 0
+upload_service_signature: tuple | None = None
 os_type = os.name
 clear_command = "cls" if os_type == 'nt' else "clear"
 os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
@@ -263,6 +278,288 @@ def get_current_monitoring_count() -> int:
     return current_monitoring
 
 
+def describe_upload_trigger(upload_config: UploadConfig) -> str:
+    if upload_config.trigger_mode == "间隔":
+        return f"间隔{upload_config.interval_seconds}秒"
+    if upload_config.trigger_mode == "录制结束":
+        return "录制结束"
+    return f"定时{upload_config.daily_time}"
+
+
+def publish_upload_status(upload_status: DashboardUploadStatus) -> None:
+    global upload_dashboard_status
+    with upload_status_lock:
+        if not upload_status.records and upload_dashboard_status.records:
+            upload_status = DashboardUploadStatus(
+                enabled=upload_status.enabled,
+                phase=upload_status.phase,
+                trigger=upload_status.trigger,
+                target=upload_status.target,
+                detail=upload_status.detail,
+                attempts=upload_status.attempts,
+                retry_limit=upload_status.retry_limit,
+                records=upload_dashboard_status.records,
+            )
+        upload_dashboard_status = upload_status
+    dashboard_store.set_upload(upload_status)
+    dashboard_refresh_event.set()
+
+
+def append_upload_record(upload_status: DashboardUploadStatus, result) -> DashboardUploadStatus:
+    message = result.message or result.stderr or result.stdout or "上传任务结束"
+    record = DashboardUploadRecord(
+        phase=result.phase,
+        message=message,
+        at=datetime.datetime.now().astimezone(),
+        attempts=result.attempts,
+        files_total=result.files_total,
+        bytes_total=result.bytes_total,
+        files_remaining=result.files_remaining,
+        bytes_remaining=result.bytes_remaining,
+    )
+    return DashboardUploadStatus(
+        enabled=upload_status.enabled,
+        phase=upload_status.phase,
+        trigger=upload_status.trigger,
+        target=upload_status.target,
+        detail=upload_status.detail,
+        attempts=upload_status.attempts,
+        retry_limit=upload_status.retry_limit,
+        records=(record, *upload_status.records)[:10],
+    )
+
+
+def format_upload_progress(progress: RcloneRcUploadProgress) -> str:
+    parts: list[str] = []
+    if progress.percent is not None:
+        parts.append(f"{progress.percent:.1f}%")
+    if progress.speed_bytes_per_second is not None:
+        parts.append(f"{format_upload_bytes(progress.speed_bytes_per_second)}/s")
+    if progress.bytes_transferred is not None and progress.total_bytes is not None:
+        parts.append(f"{format_upload_bytes(progress.bytes_transferred)} / {format_upload_bytes(progress.total_bytes)}")
+    elif progress.bytes_transferred is not None:
+        parts.append(format_upload_bytes(progress.bytes_transferred))
+    if progress.current_file:
+        parts.append(progress.current_file)
+    return " · ".join(parts) or "上传中"
+
+
+def format_upload_bytes(size: float) -> str:
+    if size < 1_000_000:
+        return f"{size / 1_000:.1f} KB"
+    if size < 1_000_000_000:
+        return f"{size / 1_000_000:.1f} MB"
+    return f"{size / 1_000_000_000:.1f} GB"
+
+
+def publish_upload_progress(progress: RcloneRcUploadProgress) -> None:
+    with upload_status_lock:
+        current_status = upload_dashboard_status
+    if not current_status.enabled:
+        return
+    publish_upload_status(
+        DashboardUploadStatus(
+            enabled=True,
+            phase="running",
+            trigger=current_status.trigger,
+            target=current_status.target,
+            detail=format_upload_progress(progress),
+            attempts=current_status.attempts,
+            retry_limit=current_status.retry_limit,
+        )
+    )
+
+
+def refresh_upload_dashboard_status(upload_config: UploadConfig) -> None:
+    with upload_status_lock:
+        current_status = upload_dashboard_status
+    if not upload_config.enabled:
+        publish_upload_status(DashboardUploadStatus(enabled=False, phase="disabled"))
+        return
+
+    trigger = describe_upload_trigger(upload_config)
+    if (
+        not current_status.enabled
+        or current_status.target != upload_config.remote_path
+        or current_status.trigger != trigger
+    ):
+        publish_upload_status(
+            DashboardUploadStatus(
+                enabled=True,
+                phase="idle",
+                trigger=trigger,
+                target=upload_config.remote_path,
+                detail="等待上传",
+            )
+        )
+    else:
+        dashboard_store.set_upload(current_status)
+
+
+def upload_config_signature(upload_config: UploadConfig, recording_save_path: str) -> tuple:
+    return (
+        upload_config.enabled,
+        upload_config.execution_mode,
+        upload_config.trigger_mode,
+        upload_config.daily_time,
+        upload_config.interval_seconds,
+        upload_config.source_path,
+        recording_save_path,
+        upload_config.remote_path,
+        upload_config.rclone_path,
+        upload_config.rc_port,
+        upload_config.min_age,
+        upload_config.transfers,
+        upload_config.checkers,
+        upload_config.rclone_retries,
+        upload_config.app_retries,
+        upload_config.retry_sleep_seconds,
+        upload_config.webdav_remote_name,
+        upload_config.webdav_url,
+        upload_config.webdav_username,
+        upload_config.webdav_password,
+        upload_config.webdav_vendor,
+        upload_config.delete_empty_dirs,
+        upload_config.dry_run,
+    )
+
+
+def upload_generation_active(generation: int) -> bool:
+    with upload_service_lock:
+        return generation == upload_service_generation
+
+
+def notify_recording_finished_upload() -> None:
+    upload_recording_finished_event.set()
+
+
+def upload_worker(upload_config: UploadConfig, recording_save_path: str, generation: int) -> None:
+    source_path = resolve_upload_source(upload_config, recording_save_path, default_path)
+    upload_service = create_upload_service(upload_config, progress_callback=publish_upload_progress)
+    trigger = describe_upload_trigger(upload_config)
+    while not exit_recording and upload_generation_active(generation):
+        if upload_config.trigger_mode == "录制结束":
+            publish_upload_status(
+                DashboardUploadStatus(
+                    enabled=True,
+                    phase="idle",
+                    trigger=trigger,
+                    target=upload_config.remote_path,
+                    detail="等待录制结束",
+                )
+            )
+            while not exit_recording and upload_generation_active(generation):
+                if upload_recording_finished_event.wait(1):
+                    upload_recording_finished_event.clear()
+                    break
+            if exit_recording or not upload_generation_active(generation):
+                return
+            cooldown_seconds = parse_rclone_duration_seconds(upload_config.min_age)
+            if cooldown_seconds > 0:
+                publish_upload_status(
+                    DashboardUploadStatus(
+                        enabled=True,
+                        phase="idle",
+                        trigger=trigger,
+                        target=upload_config.remote_path,
+                        detail=f"等待文件冷却 {cooldown_seconds} 秒后上传",
+                    )
+                )
+                for _ in range(cooldown_seconds + 1):
+                    if exit_recording or not upload_generation_active(generation):
+                        return
+                    time.sleep(1)
+        elif upload_config.trigger_mode != "间隔":
+            wait_seconds = seconds_until_next_daily_run(upload_config.daily_time)
+            publish_upload_status(
+                DashboardUploadStatus(
+                    enabled=True,
+                    phase="idle",
+                    trigger=trigger,
+                    target=upload_config.remote_path,
+                    detail=f"下次上传约 {wait_seconds // 60} 分钟后",
+                )
+            )
+            for _ in range(max(1, wait_seconds)):
+                if exit_recording or not upload_generation_active(generation):
+                    return
+                time.sleep(1)
+        if not upload_generation_active(generation):
+            return
+        retry_limit = upload_config.app_retries + 1
+        publish_upload_status(
+            DashboardUploadStatus(
+                enabled=True,
+                phase="running",
+                trigger=trigger,
+                target=upload_config.remote_path,
+                detail=f"正在上传 {source_path}",
+                retry_limit=retry_limit,
+            )
+        )
+        dashboard_store.add_event("system", "upload_started", f"开始上传 {source_path}")
+        result = upload_service.run_once(source_path)
+        if not upload_generation_active(generation):
+            return
+        phase = result.phase
+        event_type = {
+            "success": "upload_finished",
+            "partial": "upload_partial",
+            "failed": "upload_failed",
+            "skipped": "upload_skipped",
+        }.get(phase, "upload_finished")
+        message = result.message if phase == "partial" else result.stderr or result.stdout or result.message
+        dashboard_store.add_event("system", event_type, message or "上传任务结束")
+        next_status = DashboardUploadStatus(
+            enabled=True,
+            phase=phase,
+            trigger=trigger,
+            target=upload_config.remote_path,
+            detail=message or result.message,
+            attempts=result.attempts,
+            retry_limit=retry_limit,
+        )
+        publish_upload_status(append_upload_record(next_status, result))
+        if phase == "failed":
+            dashboard_store.report_incident(
+                "system",
+                "auto-upload",
+                message or "自动上传失败",
+                disposition=AttentionDisposition.AUTOMATIC,
+                retry_attempt=result.attempts,
+                retry_limit=retry_limit,
+            )
+        else:
+            dashboard_store.clear_incident("system", "auto-upload", recovery_message="自动上传恢复")
+        if upload_config.trigger_mode == "间隔":
+            for _ in range(max(1, upload_config.interval_seconds)):
+                if exit_recording or not upload_generation_active(generation):
+                    return
+                time.sleep(1)
+
+
+def start_upload_service(upload_config: UploadConfig, recording_save_path: str) -> None:
+    global upload_service_generation, upload_service_signature
+    refresh_upload_dashboard_status(upload_config)
+    signature = upload_config_signature(upload_config, recording_save_path)
+    if not upload_config.enabled:
+        with upload_service_lock:
+            if upload_service_signature != signature:
+                upload_service_generation += 1
+                upload_service_signature = signature
+        return
+    with upload_service_lock:
+        if upload_service_signature == signature:
+            return
+        upload_service_generation += 1
+        upload_service_signature = signature
+        threading.Thread(
+            target=upload_worker,
+            args=(upload_config, recording_save_path, upload_service_generation),
+            daemon=True,
+        ).start()
+
+
 def refresh_dashboard_configuration() -> None:
     current_config = load_app_config(config_file, encoding=text_encoding)
     try:
@@ -273,6 +570,7 @@ def refresh_dashboard_configuration() -> None:
     dashboard_store.reconcile_rooms(room_snapshot.desired_rooms)
 
     recording_config = current_config.recording
+    upload_config = current_config.upload
     save_path = recording_config.save_path or default_path
     recordings_size_bytes = recording_size_cache.get(save_path)
     try:
@@ -297,6 +595,7 @@ def refresh_dashboard_configuration() -> None:
             recordings_size_bytes=recordings_size_bytes,
         )
     )
+    refresh_upload_dashboard_status(upload_config)
 
 
 def build_dashboard_snapshot() -> DashboardSnapshot:
@@ -349,6 +648,7 @@ def _display_info_plain() -> None:
                 width=size.columns,
                 height=size.lines,
                 room_mode=RoomListMode.COMPACT,
+                upload_detail_expanded=dashboard_input.upload_detail_expanded,
             )
             print(build_plain_dashboard(view), flush=True)
         except Exception as e:
@@ -377,6 +677,7 @@ def display_info() -> None:
             width=dashboard.console.size.width,
             height=dashboard.console.size.height,
             room_mode=dashboard_input.room_mode,
+            upload_detail_expanded=dashboard_input.upload_detail_expanded,
         )
         dashboard.update(view)
         while True:
@@ -387,6 +688,7 @@ def display_info() -> None:
                 width=dashboard.console.size.width,
                 height=dashboard.console.size.height,
                 room_mode=dashboard_input.room_mode,
+                upload_detail_expanded=dashboard_input.upload_detail_expanded,
             )
             dashboard.update(view)
     except Exception as e:
@@ -1585,6 +1887,7 @@ def start_record(
                                     logger.info(f"{platform} | {anchor_name} | 直播源地址: {source_url}")
                                 if result.process.reason.is_success:
                                     record_finished = True
+                                    notify_recording_finished_upload()
                                     dashboard_store.add_event(
                                         record_url,
                                         "recording_finished",
@@ -1983,6 +2286,7 @@ def main() -> int:
         cookie_cfg = app_config.cookies
 
         video_save_path = recording_cfg.save_path
+        start_upload_service(app_config.upload, recording_cfg.save_path)
         folder_by_author = recording_cfg.folder_by_author
         folder_by_time = recording_cfg.folder_by_time
         folder_by_title = recording_cfg.folder_by_title

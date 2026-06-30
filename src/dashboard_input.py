@@ -11,6 +11,7 @@ class DashboardInputController:
     def __init__(self, *, on_change: Callable[[], None]) -> None:
         self._lock = threading.RLock()
         self._room_mode = RoomListMode.COMPACT
+        self._upload_detail_expanded = False
         self._enabled = True
         self._on_change = on_change
 
@@ -19,15 +20,23 @@ class DashboardInputController:
         with self._lock:
             return self._room_mode
 
+    @property
+    def upload_detail_expanded(self) -> bool:
+        with self._lock:
+            return self._upload_detail_expanded
+
     def handle_key(self, key: str) -> bool:
         with self._lock:
-            if not self._enabled or key not in {"r", "R"}:
+            if not self._enabled or key not in {"r", "R", "u", "U"}:
                 return False
-            self._room_mode = (
-                RoomListMode.EXPANDED
-                if self._room_mode is RoomListMode.COMPACT
-                else RoomListMode.COMPACT
-            )
+            if key in {"r", "R"}:
+                self._room_mode = (
+                    RoomListMode.EXPANDED
+                    if self._room_mode is RoomListMode.COMPACT
+                    else RoomListMode.COMPACT
+                )
+            else:
+                self._upload_detail_expanded = not self._upload_detail_expanded
         self._on_change()
         return True
 

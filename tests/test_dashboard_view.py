@@ -11,6 +11,8 @@ from src.dashboard_state import (
     DashboardIncident,
     DashboardRoom,
     DashboardSnapshot,
+    DashboardUploadRecord,
+    DashboardUploadStatus,
     RoomDisplayStatus,
 )
 from src.dashboard_view import RoomListMode, ViewWidth, allocate_rows, build_dashboard_view
@@ -219,6 +221,90 @@ def test_dashboard_health_shows_unknown_recording_size(snapshot):
 
     used = next(item for item in view.health if item.label == "已占用")
     assert used.value == "未知"
+
+
+def test_dashboard_health_and_config_include_auto_upload(snapshot):
+    upload = DashboardUploadStatus(
+        enabled=True,
+        phase="running",
+        trigger="定时03:00",
+        target="123pan:/LiveBackup/",
+        detail="第 1/4 次上传",
+    )
+    snapshot = replace(snapshot, upload=upload)
+
+    view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
+
+    upload_health = next(item for item in view.health if item.label == "上传")
+    assert upload_health.value == "运行中"
+    assert upload_health.healthy is True
+    assert "上传 运行中 定时03:00 → 123pan:/LiveBackup/" in view.config_items
+
+
+def test_dashboard_upload_detail_is_available_when_expanded(snapshot):
+    upload = DashboardUploadStatus(
+        enabled=True,
+        phase="failed",
+        trigger="间隔300秒",
+        target="123pan:/LiveBackup/",
+        detail="webdav timeout",
+        attempts=3,
+        retry_limit=3,
+    )
+    snapshot = replace(snapshot, upload=upload)
+
+    view = build_dashboard_view(
+        snapshot,
+        width=140,
+        height=40,
+        room_mode=RoomListMode.COMPACT,
+        upload_detail_expanded=True,
+    )
+
+    assert view.upload_detail == "间隔300秒 · 123pan:/LiveBackup/ · webdav timeout · 重试 3/3"
+
+
+def test_dashboard_upload_detail_includes_recent_records(snapshot):
+    upload = DashboardUploadStatus(
+        enabled=True,
+        phase="partial",
+        trigger="录制结束",
+        target="123pan:/LiveBackup/",
+        detail="仍有文件等待冷却",
+        records=(
+            DashboardUploadRecord(
+                phase="partial",
+                message="部分上传：仍有 1 个文件待上传",
+                at=NOW,
+                files_total=3,
+                files_remaining=1,
+                bytes_total=3_000_000,
+                bytes_remaining=1_000_000,
+            ),
+        ),
+    )
+    snapshot = replace(snapshot, upload=upload)
+
+    view = build_dashboard_view(
+        snapshot,
+        width=140,
+        height=40,
+        room_mode=RoomListMode.COMPACT,
+        upload_detail_expanded=True,
+    )
+
+    assert "最近记录" in view.upload_detail
+    assert "部分完成" in view.upload_detail
+    assert "3 个文件 / 3.0 MB，剩余 1 个 / 1.0 MB" in view.upload_detail
+
+
+def test_upload_events_have_specific_labels(snapshot):
+    snapshot = replace(snapshot, events=(DashboardEvent("system", "upload_finished", "上传完成", NOW),))
+
+    view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
+
+    assert view.events[0].label == "上传完成"
+    assert view.events[0].room_name == "系统"
 
 
 def test_recording_detail_survives_missing_output_file(snapshot):

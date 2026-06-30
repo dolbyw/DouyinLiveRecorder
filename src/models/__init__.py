@@ -5,6 +5,7 @@ from .config import (
     CookieConfig,
     PushConfig,
     RecordingConfig,
+    UploadConfig,
     UrlConfigEntry,
 )
 from .enums import ProxyMode, QualityLevel, SaveType
@@ -21,6 +22,7 @@ __all__ = [
     "RecordingConfig",
     "SaveType",
     "StreamInfo",
+    "UploadConfig",
     "make_stream_info",
     "normalize_platform_payload",
     "UrlConfigEntry",

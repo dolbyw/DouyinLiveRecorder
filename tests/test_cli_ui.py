@@ -23,6 +23,7 @@ from src.dashboard_state import (
     DashboardIncident,
     DashboardRoom,
     DashboardSnapshot,
+    DashboardUploadStatus,
     RoomDisplayStatus,
 )
 from src.dashboard_view import RoomListMode, build_dashboard_view
@@ -187,6 +188,32 @@ def test_expanded_room_title_changes_toggle_hint():
     output = render(dashboard_view(mode=RoomListMode.EXPANDED), width=140)
 
     assert "[R] 收起" in output
+
+
+def test_expanded_upload_detail_renders_system_upload_panel():
+    snapshot = replace(
+        dashboard_snapshot(),
+        upload=DashboardUploadStatus(
+            enabled=True,
+            phase="running",
+            trigger="定时03:00",
+            target="123pan:/LiveBackup/",
+            detail="第 1/4 次上传",
+        ),
+    )
+    view = build_dashboard_view(
+        snapshot,
+        width=140,
+        height=42,
+        room_mode=RoomListMode.COMPACT,
+        upload_detail_expanded=True,
+    )
+
+    output = render(view, width=140)
+
+    assert "自动上传" in output
+    assert "[U] 收起" in output
+    assert "123pan:/LiveBackup/" in output
 
 
 def test_plain_dashboard_uses_same_view_without_sensitive_fields():

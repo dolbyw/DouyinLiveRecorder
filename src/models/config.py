@@ -100,12 +100,39 @@ class CookieConfig:
 
 
 @dataclass(slots=True)
+class UploadConfig:
+    enabled: bool = False
+    execution_mode: str = "rc"
+    trigger_mode: str = "录制结束"
+    daily_time: str = "03:00"
+    interval_seconds: int = 300
+    source_path: str = ""
+    remote_path: str = "123pan:/LiveBackup/"
+    rclone_path: str = ""
+    rc_port: int = 5572
+    min_age: str = "1h"
+    transfers: int = 2
+    checkers: int = 2
+    rclone_retries: int = 3
+    app_retries: int = 3
+    retry_sleep_seconds: int = 900
+    webdav_remote_name: str = ""
+    webdav_url: str = ""
+    webdav_username: str = ""
+    webdav_password: str = ""
+    webdav_vendor: str = "other"
+    delete_empty_dirs: bool = True
+    dry_run: bool = False
+
+
+@dataclass(slots=True)
 class AppConfig:
     recording: RecordingConfig
     push: PushConfig
     authorization: AuthorizationConfig
     accounts: AccountConfig
     cookies: CookieConfig
+    upload: UploadConfig = field(default_factory=UploadConfig)
 
 
 @dataclass(slots=True)
