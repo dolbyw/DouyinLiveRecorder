@@ -124,27 +124,29 @@ _STATUS_PRIORITY = {
 }
 
 _STATUS_VIEW = {
-    RoomDisplayStatus.WAITING: ("等待", "dim"),
-    RoomDisplayStatus.PROBING: ("首检", "info"),
-    RoomDisplayStatus.MONITORING: ("监控", "info"),
-    RoomDisplayStatus.RECORDING: ("录制", "success"),
-    RoomDisplayStatus.CONVERTING: ("转码", "warning"),
-    RoomDisplayStatus.RETRYING: ("恢复中", "warning"),
-    RoomDisplayStatus.DISABLED: ("停用", "dim"),
+    RoomDisplayStatus.WAITING: ("待检测", "dim"),
+    RoomDisplayStatus.PROBING: ("首次检测", "info"),
+    RoomDisplayStatus.MONITORING: ("等待开播", "info"),
+    RoomDisplayStatus.RECORDING: ("录制中", "success"),
+    RoomDisplayStatus.CONVERTING: ("转码中", "warning"),
+    RoomDisplayStatus.RETRYING: ("自动重试", "warning"),
+    RoomDisplayStatus.DISABLED: ("已停用", "dim"),
 }
 
 _EVENT_VIEW = {
-    "recording_started": ("开始录制", "success"),
-    "recording_finished": ("录制结束", "dim"),
-    "conversion_started": ("开始转码", "warning"),
-    "conversion_finished": ("处理完成", "info"),
-    "conversion_failed": ("处理失败", "danger"),
+    "recording_started": ("录制开始", "success"),
+    "recording_finished": ("录制文件完成", "dim"),
+    "conversion_started": ("转码开始", "warning"),
+    "segment_conversion_watch_started": ("分段监控", "info"),
+    "conversion_finished": ("转码完成", "success"),
+    "conversion_failed": ("转码失败", "danger"),
     "recording_error": ("录制异常", "danger"),
     "upload_started": ("上传开始", "info"),
     "upload_finished": ("上传完成", "success"),
-    "upload_partial": ("部分上传", "warning"),
+    "upload_partial": ("上传部分完成", "warning"),
     "upload_failed": ("上传失败", "danger"),
-    "upload_skipped": ("上传跳过", "dim"),
+    "upload_skipped": ("没有可上传文件", "dim"),
+    "startup_recovery_upload": ("启动补传", "info"),
     "incident_recovered": ("已恢复", "success"),
     "room_added": ("加入监控", "info"),
     "disabled": ("已停用", "dim"),
@@ -228,22 +230,22 @@ def build_dashboard_view(
     automatic_count = len(snapshot.incidents) - actionable_count
     metrics = (
         MetricView(str(len(snapshot.rooms)), "直播间"),
-        MetricView(str(snapshot.recording_count), "录制", "success"),
-        MetricView(str(snapshot.monitoring_count), "监控", "info"),
-        MetricView(str(snapshot.converting_count), "转码", "warning"),
+        MetricView(str(snapshot.recording_count), "录制中", "success"),
+        MetricView(str(snapshot.monitoring_count), "等待开播", "info"),
+        MetricView(str(snapshot.converting_count), "转码中", "warning"),
         MetricView(str(actionable_count), "需处理", "danger" if actionable_count else "success"),
     )
     health = (
         HealthView("FFmpeg", "正常" if snapshot.ffmpeg_ready else "异常", snapshot.ffmpeg_ready),
         HealthView(
-            "已占用",
+            "录制目录",
             _format_bytes(snapshot.config.recordings_size_bytes)
             if snapshot.config.recordings_size_bytes is not None
             else "未知",
             True,
         ),
         HealthView(
-            "剩余",
+            "磁盘剩余",
             f"{snapshot.config.disk_free_gb:.1f} GB" if snapshot.config.disk_free_gb is not None else "未知",
             snapshot.config.disk_free_gb is None or snapshot.config.disk_free_gb > 1,
         ),
@@ -337,9 +339,9 @@ def _build_event_row(event: DashboardEvent, snapshot: DashboardSnapshot) -> Even
     label, kind = _EVENT_VIEW.get(event.event_type, ("状态变化", "normal"))
     details = dict(event.details)
     suffix = [details[key] for key in ("size", "duration") if details.get(key)]
-    detail = " · ".join((event.message, *suffix))
+    detail = " · ".join((_event_detail_text(event), *suffix))
     if event.occurrences > 1:
-        detail = f"{detail} ×{event.occurrences}"
+        detail = f"{detail}，重复 {event.occurrences} 次"
     return EventRowView(
         time=f"{event.at:%H:%M:%S}",
         label=label,
@@ -347,6 +349,24 @@ def _build_event_row(event: DashboardEvent, snapshot: DashboardSnapshot) -> Even
         room_name=room_name,
         detail=detail,
     )
+
+
+def _event_detail_text(event: DashboardEvent) -> str:
+    if event.event_type == "recording_started":
+        return "已打开直播流，正在写入文件"
+    if event.event_type == "recording_finished":
+        return "录制文件写入完成"
+    if event.event_type == "conversion_started":
+        return "分段文件已完成，正在生成 MP4"
+    if event.event_type == "segment_conversion_watch_started":
+        return event.message
+    if event.event_type == "conversion_finished":
+        return "录制文件已转为 MP4"
+    if event.event_type == "upload_started":
+        return "正在上传已完成文件"
+    if event.event_type == "startup_recovery_upload":
+        return "启动后扫描可补传文件"
+    return event.message
 
 
 def _room_progress(room: DashboardRoom) -> str:
@@ -368,20 +388,20 @@ def _room_detail(room: DashboardRoom, snapshot: DashboardSnapshot, reader: Recor
             return "等待首次检测"
         elapsed = max(0, int((snapshot.current_time - room.last_checked_at).total_seconds()))
         remaining = max(0, snapshot.config.poll_seconds - elapsed)
-        return f"下次检测 {remaining // 60:02d}:{remaining % 60:02d}"
+        return f"{remaining // 60:02d}:{remaining % 60:02d} 后再次检测"
     if room.status is RoomDisplayStatus.RECORDING:
         try:
             stats = reader(room)
         except (OSError, ValueError):
             stats = None
         if stats is not None:
-            return f"{_format_bytes(stats.size_bytes)} · {stats.bitrate_mbps:.1f} Mbps"
+            return f"已写入 {_format_bytes(stats.size_bytes)} · 平均 {stats.bitrate_mbps:.1f} Mbps"
         filename = Path(room.output_path).name if room.output_path else ""
-        return f"{filename} · 正在写入" if filename else "正在写入"
+        return f"正在写入 {filename}" if filename else "正在写入文件"
     if room.status is RoomDisplayStatus.CONVERTING:
-        return room.task_name or "正在转码"
+        return f"正在生成 MP4：{room.task_name}" if room.task_name else "正在生成 MP4"
     if room.status is RoomDisplayStatus.RETRYING:
-        return room.last_error or "等待重试"
+        return room.last_error or "等待自动重试"
     return "配置已停用"
 
 
@@ -413,7 +433,7 @@ def _config_items(config: DashboardConfig, upload: DashboardUploadStatus | None 
         save_format,
         config.quality,
         f"分段 {split}",
-        f"检测 {config.poll_seconds} 秒",
+        f"检测间隔 {config.poll_seconds} 秒",
         f"并发 {config.max_requests}",
         f"代理 {'开' if config.use_proxy else '关'}",
     ]
@@ -426,16 +446,16 @@ def _upload_config_items(upload: DashboardUploadStatus) -> tuple[str, ...]:
     items = [f"上传 {_short_upload_trigger(upload.trigger)}"]
     remote = _upload_remote_name(upload.target)
     if remote:
-        items.append(f"WebDAV {remote}")
-    target = _upload_target_name(upload.target)
+        items.append(f"远端 {remote}")
+    target = _upload_target_path(upload.target)
     if target:
-        items.append(f"目标 {target}")
+        items.append(f"远端目录 {target}")
     return tuple(items)
 
 
 def _short_upload_trigger(trigger: str) -> str:
     if trigger == "录制结束":
-        return "录后"
+        return "文件完成后"
     if trigger.startswith("间隔"):
         return trigger.replace("秒", "s")
     if trigger.startswith("定时"):
@@ -447,11 +467,11 @@ def _upload_remote_name(target: str) -> str:
     return target.split(":", maxsplit=1)[0].strip() if ":" in target else ""
 
 
-def _upload_target_name(target: str) -> str:
+def _upload_target_path(target: str) -> str:
     if ":" not in target:
         return target.strip()
-    path = target.split(":", maxsplit=1)[1].strip().strip("/")
-    return path.rsplit("/", maxsplit=1)[-1] if path else ""
+    path = target.split(":", maxsplit=1)[1].strip()
+    return f"/{path.strip('/')}" if path.strip("/") else "/"
 
 
 def _upload_health(upload: DashboardUploadStatus) -> HealthView:
@@ -470,44 +490,150 @@ def _upload_health(upload: DashboardUploadStatus) -> HealthView:
 
 
 def _upload_detail(upload: DashboardUploadStatus) -> str:
-    parts = [part for part in (upload.trigger, upload.target, upload.detail) if part]
-    if upload.retry_limit:
-        parts.append(f"重试 {upload.attempts}/{upload.retry_limit}")
-    detail = " · ".join(parts)
+    lines = [_upload_plan_text(upload), _upload_status_text(upload)]
+    overall = _upload_overall_text(upload)
+    if overall:
+        lines.append(overall)
+    if upload.active_transfers:
+        lines.append("正在上传：")
+        lines.extend(_upload_transfer_line(transfer) for transfer in upload.active_transfers[:4])
     if upload.records:
-        rows = [
-            "最近记录",
-            *(_upload_record_line(record) for record in upload.records[:8]),
-        ]
-        return "\n".join((detail, *rows)) if detail else "\n".join(rows)
-    return detail
+        lines.append("最近上传：")
+        lines.extend(_upload_record_line(record) for record in upload.records[:8])
+    return "\n".join(lines)
 
 
 def _upload_summary(upload: DashboardUploadStatus) -> str:
-    parts = [part for part in (upload.trigger, upload.target, upload.detail) if part]
-    return " · ".join(parts)
+    return "\n".join((_upload_plan_text(upload), _upload_status_text(upload)))
 
 
 def _upload_phase_label(phase: str) -> str:
     labels = {
-        "idle": "空闲",
-        "running": "运行中",
-        "success": "完成",
-        "partial": "部分完成",
-        "skipped": "无文件",
-        "failed": "异常",
-        "disabled": "关闭",
+        "idle": "等待文件",
+        "running": "上传中",
+        "success": "上传完成",
+        "partial": "上传部分完成，待重试",
+        "skipped": "没有可上传文件",
+        "failed": "上传失败",
+        "disabled": "已关闭",
     }
-    return labels.get(phase, phase or "未知")
+    return labels.get(phase, phase or "未知状态")
+
+
+def _upload_plan_text(upload: DashboardUploadStatus) -> str:
+    trigger = upload.trigger
+    if trigger == "录制结束":
+        return f"计划：文件完成后上传到 {upload.target}"
+    if trigger.startswith("间隔"):
+        seconds = trigger.removeprefix("间隔").removesuffix("秒")
+        return f"计划：每 {seconds} 秒检查并上传到 {upload.target}"
+    if trigger.startswith("定时"):
+        time_text = trigger.removeprefix("定时")
+        return f"计划：每天 {time_text} 上传到 {upload.target}"
+    return f"计划：上传到 {upload.target}" if upload.target else "计划：自动上传"
+
+
+def _upload_status_text(upload: DashboardUploadStatus) -> str:
+    if upload.phase == "idle" and upload.detail in {"等待录制结束", "等待新的已完成文件", ""}:
+        return "状态：等待新的已完成文件"
+    label = _upload_phase_label(upload.phase)
+    parts = [label]
+    detail = _upload_status_detail(upload)
+    if detail and detail != label:
+        parts.append(detail)
+    if upload.retry_limit:
+        parts.append(f"重试 {upload.attempts}/{upload.retry_limit}")
+    return f"状态：{'，'.join(parts)}"
+
+
+def _upload_status_detail(upload: DashboardUploadStatus) -> str:
+    detail = _friendly_upload_message(upload.detail)
+    if upload.phase == "running" and (
+        upload.files_total
+        or upload.bytes_transferred is not None
+        or upload.bytes_total is not None
+        or upload.speed_bytes_per_second is not None
+        or upload.active_transfers
+    ):
+        return ""
+    return detail
+
+
+def _upload_overall_text(upload: DashboardUploadStatus) -> str:
+    parts: list[str] = []
+    if upload.files_total:
+        files_done = min(upload.files_total, max(0, upload.files_done))
+        parts.append(f"{files_done}/{upload.files_total} 文件")
+    if upload.bytes_transferred is not None and upload.bytes_total is not None:
+        parts.append(f"{_format_bytes(upload.bytes_transferred)} / {_format_bytes(upload.bytes_total)}")
+    elif upload.bytes_transferred is not None:
+        parts.append(_format_bytes(upload.bytes_transferred))
+    if upload.speed_bytes_per_second is not None:
+        parts.append(f"{_format_bytes(upload.speed_bytes_per_second)}/s")
+    if upload.files_waiting:
+        parts.append(f"等待 {upload.files_waiting} 个")
+    return f"总体：{' · '.join(parts)}" if parts else ""
+
+
+def _upload_transfer_line(transfer) -> str:
+    parts: list[str] = []
+    if getattr(transfer, "streamer", ""):
+        parts.append(transfer.streamer)
+    if getattr(transfer, "file_name", ""):
+        parts.append(transfer.file_name)
+    elif getattr(transfer, "relative_path", ""):
+        parts.append(Path(transfer.relative_path).name)
+    if transfer.percent is not None:
+        parts.append(f"{transfer.percent:.1f}%")
+    if transfer.speed_bytes_per_second is not None:
+        parts.append(f"{_format_bytes(transfer.speed_bytes_per_second)}/s")
+    if transfer.bytes_transferred is not None and transfer.total_bytes is not None:
+        parts.append(f"{_format_bytes(transfer.bytes_transferred)} / {_format_bytes(transfer.total_bytes)}")
+    elif transfer.bytes_transferred is not None:
+        parts.append(_format_bytes(transfer.bytes_transferred))
+    return " · ".join(parts) or "上传中"
 
 
 def _upload_record_line(record) -> str:
-    owner = f"{record.streamer} · " if getattr(record, "streamer", "") else ""
-    file_name = f"{record.file_name} · " if getattr(record, "file_name", "") else ""
-    return (
-        f"{record.at:%H:%M:%S} {_upload_phase_label(record.phase)} "
-        f"{owner}{file_name}{_upload_record_stats(record)}{record.message}"
-    ).strip()
+    parts = [f"{record.at:%H:%M:%S} {_upload_phase_label(record.phase)}"]
+    if getattr(record, "streamer", ""):
+        parts.append(record.streamer)
+    if getattr(record, "file_name", ""):
+        parts.append(record.file_name)
+    stats = _upload_record_stats(record).strip("，")
+    if stats:
+        parts.append(stats)
+    message = _normalized_upload_record_message(record)
+    if message:
+        parts.append(message)
+    return " · ".join(parts)
+
+
+def _normalized_upload_record_message(record) -> str:
+    message = _friendly_upload_message(record.message)
+    if not message or message.lower() == "upload completed":
+        return ""
+    if message == _upload_phase_label(record.phase):
+        return ""
+    return message
+
+
+def _friendly_upload_message(message: str) -> str:
+    message = str(message or "").strip()
+    prefix = "source has no files:"
+    if message.lower().startswith(prefix):
+        source = message[len(prefix):].strip()
+        source_name = _last_path_name(source)
+        return f"没有找到可上传文件：{source_name}" if source_name else "没有找到可上传文件"
+    return message
+
+
+def _last_path_name(path_text: str) -> str:
+    stripped = path_text.strip().strip('"').strip("'").rstrip("\\/")
+    if not stripped:
+        return ""
+    normalized = stripped.replace("\\", "/")
+    return normalized.rsplit("/", maxsplit=1)[-1] or stripped
 
 
 def _upload_record_stats(record) -> str:

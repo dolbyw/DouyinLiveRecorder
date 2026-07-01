@@ -46,8 +46,10 @@ from src.dashboard_state import (
     DashboardStateStore,
     DashboardUploadRecord,
     DashboardUploadStatus,
+    DashboardUploadTransfer,
 )
 from src.dashboard_view import RoomListMode, build_dashboard_view
+from src.diagnostic_logging import format_log_context
 from src.http_clients.client_pool import close_async_clients_for_current_loop
 from src.http_clients.runner import run_async, run_async_batch
 from src.logger import disable_console_logging
@@ -309,6 +311,13 @@ def publish_upload_status(upload_status: DashboardUploadStatus) -> None:
                 attempts=upload_status.attempts,
                 retry_limit=upload_status.retry_limit,
                 records=upload_dashboard_status.records,
+                files_total=upload_status.files_total,
+                files_done=upload_status.files_done,
+                files_waiting=upload_status.files_waiting,
+                bytes_transferred=upload_status.bytes_transferred,
+                bytes_total=upload_status.bytes_total,
+                speed_bytes_per_second=upload_status.speed_bytes_per_second,
+                active_transfers=upload_status.active_transfers,
             )
         upload_dashboard_status = upload_status
     dashboard_store.set_upload(upload_status)
@@ -438,11 +447,20 @@ def append_upload_record(
         attempts=upload_status.attempts,
         retry_limit=upload_status.retry_limit,
         records=(record, *file_records, *upload_status.records)[:30],
+        files_total=upload_status.files_total,
+        files_done=upload_status.files_done,
+        files_waiting=upload_status.files_waiting,
+        bytes_transferred=upload_status.bytes_transferred,
+        bytes_total=upload_status.bytes_total,
+        speed_bytes_per_second=upload_status.speed_bytes_per_second,
+        active_transfers=upload_status.active_transfers,
     )
 
 
 def format_upload_progress(progress: RcloneRcUploadProgress) -> str:
     parts: list[str] = []
+    if progress.files_total:
+        parts.append(f"{progress.files_done}/{progress.files_total} 文件")
     if progress.percent is not None:
         parts.append(f"{progress.percent:.1f}%")
     if progress.speed_bytes_per_second is not None:
@@ -451,9 +469,42 @@ def format_upload_progress(progress: RcloneRcUploadProgress) -> str:
         parts.append(f"{format_upload_bytes(progress.bytes_transferred)} / {format_upload_bytes(progress.total_bytes)}")
     elif progress.bytes_transferred is not None:
         parts.append(format_upload_bytes(progress.bytes_transferred))
+    if progress.files_waiting:
+        parts.append(f"等待 {progress.files_waiting} 个")
     if progress.current_file:
-        parts.append(progress.current_file)
+        parts.append(Path(progress.current_file).name)
     return " · ".join(parts) or "上传中"
+
+
+def build_dashboard_upload_transfers(progress: RcloneRcUploadProgress) -> tuple[DashboardUploadTransfer, ...]:
+    records: list[DashboardUploadTransfer] = []
+    if not progress.active_transfers and progress.current_file:
+        relative_path = Path(progress.current_file)
+        return (
+            DashboardUploadTransfer(
+                streamer=infer_upload_streamer(relative_path),
+                file_name=relative_path.name,
+                relative_path=relative_path.as_posix(),
+                percent=progress.percent,
+                speed_bytes_per_second=progress.speed_bytes_per_second,
+                bytes_transferred=progress.bytes_transferred,
+                total_bytes=progress.total_bytes,
+            ),
+        )
+    for transfer in progress.active_transfers:
+        relative_path = Path(str(transfer.name or ""))
+        records.append(
+            DashboardUploadTransfer(
+                streamer=infer_upload_streamer(relative_path),
+                file_name=relative_path.name,
+                relative_path=relative_path.as_posix(),
+                percent=transfer.percent,
+                speed_bytes_per_second=transfer.speed_bytes_per_second,
+                bytes_transferred=transfer.bytes_transferred,
+                total_bytes=transfer.total_bytes,
+            )
+        )
+    return tuple(records)
 
 
 def format_upload_bytes(size: float) -> str:
@@ -478,6 +529,13 @@ def publish_upload_progress(progress: RcloneRcUploadProgress) -> None:
             detail=format_upload_progress(progress),
             attempts=current_status.attempts,
             retry_limit=current_status.retry_limit,
+            files_total=progress.files_total,
+            files_done=progress.files_done,
+            files_waiting=progress.files_waiting,
+            bytes_transferred=progress.bytes_transferred,
+            bytes_total=progress.total_bytes,
+            speed_bytes_per_second=progress.speed_bytes_per_second,
+            active_transfers=build_dashboard_upload_transfers(progress),
         )
     )
 
@@ -635,7 +693,7 @@ def upload_worker(
                         phase="idle",
                         trigger=trigger,
                         target=upload_config.remote_path,
-                        detail="等待录制结束",
+                        detail="等待新的已完成文件",
                     )
                 )
                 while not upload_shutdown_requested() and upload_generation_active(generation):
@@ -679,7 +737,7 @@ def upload_worker(
                     retry_limit=retry_limit,
                 )
             )
-            dashboard_store.add_event("system", "upload_started", f"开始上传 {source_path}")
+            dashboard_store.add_event("system", "upload_started", "开始上传已完成文件")
             upload_snapshot_before = snapshot_upload_files(source_path)
             result = upload_service.run_once(source_path)
             upload_snapshot_after = snapshot_upload_files(source_path)
@@ -754,7 +812,7 @@ def start_upload_service(
             daemon=True,
         ).start()
     if initial_scan:
-        dashboard_store.add_event("system", "startup_recovery_upload", "启动后扫描可上传文件")
+        dashboard_store.add_event("system", "startup_recovery_upload", "启动后扫描可补传文件")
 
 
 def refresh_dashboard_configuration() -> None:
@@ -849,7 +907,7 @@ def _display_info_plain() -> None:
             )
             print(build_plain_dashboard(view), flush=True)
         except Exception as e:
-            logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+            logger.opt(exception=e).error("plain dashboard refresh failed")
 
 
 def display_info() -> None:
@@ -889,7 +947,7 @@ def display_info() -> None:
             )
             dashboard.update(view)
     except Exception as e:
-        logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+        logger.opt(exception=e).error("rich dashboard refresh failed; falling back to plain dashboard")
         use_plain_fallback = True
     finally:
         dashboard_key_reader.stop()
@@ -914,7 +972,10 @@ def update_file(file_path: str, old_str: str, new_str: str, start_str: str = Non
                     if text_line not in file_data:
                         file_data.append(text_line)
             except RuntimeError as e:
-                logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                logger.opt(exception=e).error(
+                    "config file update failed | {}",
+                    format_log_context(file_path=file_path, old=old_str, new=new_str),
+                )
                 if ini_URL_content:
                     with open(file_path, "w", encoding=text_encoding) as f2:
                         f2.write(ini_URL_content)
@@ -1179,7 +1240,10 @@ def direct_download_stream(source_url: str, save_path: str, record_name: str, li
                         downloaded += len(chunk)
                 return True
     except Exception as e:
-        logger.error(f"FLV下载错误: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+        logger.opt(exception=e).error(
+            "direct FLV download failed | {}",
+            format_log_context(platform=platform, record_name=record_name, room_url=live_url, save_path=save_path),
+        )
         return False
 
 
@@ -1937,7 +2001,7 @@ def start_record(
                                     dashboard_store.add_event(
                                         record_url,
                                         "recording_started",
-                                        f"{anchor_name} 开始录制",
+                                        "已打开直播流，正在写入文件",
                                         at=started_at,
                                         correlation_id=f"recording:{record_url}:{plan.output_path}",
                                     )
@@ -2086,8 +2150,8 @@ def start_record(
                                     )
                                     dashboard_store.add_event(
                                         room_url,
-                                        "conversion_started",
-                                        "分段完成后自动转 MP4",
+                                        "segment_conversion_watch_started",
+                                        "分段录制已启用，完成的分段会自动转 MP4",
                                         correlation_id=f"conversion-watch:{room_url}:{plan.output_path}",
                                     )
 
@@ -2129,7 +2193,9 @@ def start_record(
                                     )
 
                                 if show_url:
-                                    logger.info(f"{platform} | {anchor_name} | 直播源地址: {source_url}")
+                                    logger.bind(play_url=True).info(
+                                        f"{platform} | {anchor_name} | 直播源地址: {source_url}"
+                                    )
                                 if result.process.reason.is_success:
                                     record_finished = True
                                     notify_recording_finished_upload()
@@ -2175,7 +2241,15 @@ def start_record(
                                 break
 
                 except Exception as e:
-                    logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+                    logger.opt(exception=e).error(
+                        "recording cycle failed | {}",
+                        format_log_context(
+                            anchor_name=anchor_name,
+                            platform=platform,
+                            record_name=record_name,
+                            room_url=record_url,
+                        ),
+                    )
                     with max_request_lock:
                         error_count += 1
                         error_window.append(1)
@@ -2216,7 +2290,10 @@ def start_record(
                 if loop_time:
                     logger.debug('检测直播间中')
         except Exception as e:
-            logger.error(f"错误信息: {e} 发生错误的行数: {e.__traceback__.tb_lineno}")
+            logger.opt(exception=e).error(
+                "recording worker failed | {}",
+                format_log_context(anchor_name=anchor_name, record_name=record_name, room_url=record_url),
+            )
             with max_request_lock:
                 error_count += 1
                 error_window.append(1)
@@ -2770,7 +2847,7 @@ def main() -> int:
             first_start = False
 
         except Exception as err:
-            logger.error(f"错误信息: {err} 发生错误的行数: {err.__traceback__.tb_lineno}")
+            logger.opt(exception=err).error("room scheduling loop failed")
 
         if first_run:
             t = threading.Thread(target=display_info, args=(), daemon=True)

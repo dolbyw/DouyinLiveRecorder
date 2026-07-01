@@ -81,6 +81,17 @@ class DashboardUploadRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class DashboardUploadTransfer:
+    streamer: str = ""
+    file_name: str = ""
+    relative_path: str = ""
+    percent: float | None = None
+    speed_bytes_per_second: float | None = None
+    bytes_transferred: int | None = None
+    total_bytes: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardUploadStatus:
     enabled: bool = False
     phase: str = "disabled"
@@ -90,6 +101,13 @@ class DashboardUploadStatus:
     attempts: int = 0
     retry_limit: int = 0
     records: tuple[DashboardUploadRecord, ...] = ()
+    files_total: int = 0
+    files_done: int = 0
+    files_waiting: int = 0
+    bytes_transferred: int | None = None
+    bytes_total: int | None = None
+    speed_bytes_per_second: float | None = None
+    active_transfers: tuple[DashboardUploadTransfer, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

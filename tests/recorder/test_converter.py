@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from src.logger import logger
 from src.recorder.converter import ConversionError, ConversionProgress, FFmpegConverter, parse_progress_time
 
 
@@ -12,6 +13,12 @@ class FakeProcess:
 
     def wait(self):
         return self.returncode
+
+
+def capture_logs():
+    messages = []
+    sink_id = logger.add(messages.append, format="{level}|{message}", level="DEBUG", diagnose=False)
+    return messages, sink_id
 
 
 def test_progress_time_parses_ffmpeg_microseconds():
@@ -99,6 +106,30 @@ def test_failed_conversion_preserves_source_removes_temporary_and_reports_diagno
     assert not (tmp_path / "a.converting.mp4").exists()
 
 
+def test_failed_conversion_logs_source_target_and_diagnostics(tmp_path):
+    source = tmp_path / "a.ts"
+    source.write_bytes(b"transport-stream")
+
+    def start(command, **_kwargs):
+        Path(command[-1]).write_bytes(b"partial")
+        return FakeProcess(1, ["fatal conversion error\n"])
+
+    converter = FFmpegConverter(process_factory=start, probe_duration=lambda _source: 10.0)
+    messages, sink_id = capture_logs()
+    try:
+        with pytest.raises(ConversionError):
+            converter.convert(source, delete_source=True)
+    finally:
+        logger.remove(sink_id)
+
+    output = "\n".join(messages)
+    assert "conversion started" in output
+    assert "conversion failed" in output
+    assert f"source={source}" in output
+    assert f"target={tmp_path / 'a.mp4'}" in output
+    assert "fatal conversion error" in output
+
+
 def test_probe_failure_uses_indeterminate_progress_without_blocking_conversion(tmp_path):
     source = tmp_path / "a.ts"
     source.write_bytes(b"transport-stream")
@@ -117,6 +148,32 @@ def test_probe_failure_uses_indeterminate_progress_without_blocking_conversion(t
     assert source.exists()
     assert all(item.duration is None for item in progress)
     assert progress[-1].finished is True
+
+
+def test_probe_failure_and_successful_conversion_are_logged(tmp_path):
+    source = tmp_path / "a.ts"
+    source.write_bytes(b"transport-stream")
+
+    def fail_probe(_source):
+        raise OSError("ffprobe unavailable")
+
+    def start(command, **_kwargs):
+        Path(command[-1]).write_bytes(b"complete-mp4")
+        return FakeProcess(0, ["progress=end\n"])
+
+    converter = FFmpegConverter(process_factory=start, probe_duration=fail_probe)
+    messages, sink_id = capture_logs()
+    try:
+        result = converter.convert(source, delete_source=False)
+    finally:
+        logger.remove(sink_id)
+
+    output = "\n".join(messages)
+    assert result == tmp_path / "a.mp4"
+    assert "conversion probe failed" in output
+    assert "conversion completed" in output
+    assert f"source={source}" in output
+    assert f"target={tmp_path / 'a.mp4'}" in output
 
 
 def test_progress_callback_failure_does_not_abort_conversion(tmp_path):

@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from fnmatch import fnmatch
 from pathlib import Path
 
+from src.diagnostic_logging import format_log_context, sanitize_command, sanitize_for_log
+from src.logger import logger
 from src.models import UploadConfig
 
 
@@ -357,6 +359,12 @@ class RcloneUploadService:
     def run_once(self, source_path: str | Path) -> UploadRunResult:
         source = Path(source_path)
         files_total, bytes_total = _source_file_stats(source, self._config.exclude_patterns)
+        base_context = {
+            "source": source,
+            "remote": self._config.remote_path,
+            "files_total": files_total,
+            "bytes_total": bytes_total,
+        }
         if files_total == 0:
             result = UploadRunResult(
                 phase="skipped",
@@ -365,14 +373,20 @@ class RcloneUploadService:
                 message=f"source has no files: {source}",
             )
             self.status = UploadStatus(phase=result.phase, exit_code=result.exit_code, message=result.message)
+            logger.info("upload skipped | {}", format_log_context(**base_context, reason="source has no files"))
             return result
         if self._stop_requested():
             result = upload_result_from_stop_request()
             self.status = UploadStatus(phase=result.phase, exit_code=result.exit_code, message=result.message)
+            logger.info("upload skipped | {}", format_log_context(**base_context, reason="stop requested"))
             return result
 
         config_command = build_rclone_config_create_command(self._config, app_root=self._app_root)
         if config_command is not None:
+            logger.debug(
+                "upload remote config started | {}",
+                format_log_context(command=" ".join(sanitize_command(config_command)), **base_context),
+            )
             config_result = self._runner(config_command)
             if config_result.exit_code != 0:
                 result = UploadRunResult(
@@ -391,6 +405,16 @@ class RcloneUploadService:
                     stdout=result.stdout,
                     stderr=result.stderr,
                 )
+                logger.error(
+                    "upload remote config failed | {}",
+                    format_log_context(
+                        command=" ".join(sanitize_command(config_command)),
+                        exit_code=result.exit_code,
+                        stderr=sanitize_for_log(result.stderr),
+                        stdout=sanitize_for_log(result.stdout),
+                        **base_context,
+                    ),
+                )
                 return result
 
         command = build_rclone_move_command(self._config, source, app_root=self._app_root)
@@ -401,8 +425,21 @@ class RcloneUploadService:
             if self._stop_requested():
                 result = upload_result_from_stop_request(attempts=attempt - 1)
                 self.status = UploadStatus(phase=result.phase, exit_code=result.exit_code, message=result.message)
+                logger.info(
+                    "upload skipped | {}",
+                    format_log_context(**base_context, attempt=attempt, reason="stop requested"),
+                )
                 return result
             self.status = UploadStatus(phase="running", attempts=attempt, message=f"attempt {attempt}/{max_attempts}")
+            logger.info(
+                "upload attempt started | {}",
+                format_log_context(
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    command=" ".join(sanitize_command(command)),
+                    **base_context,
+                ),
+            )
             last_result = self._runner(command)
             if last_result.exit_code == 0:
                 result = upload_result_from_success(
@@ -423,8 +460,33 @@ class RcloneUploadService:
                     stdout=result.stdout,
                     stderr=result.stderr,
                 )
+                if result.phase == "partial":
+                    logger.warning(
+                        "upload partially completed | {}",
+                        format_log_context(
+                            attempt=attempt,
+                            files_remaining=result.files_remaining,
+                            bytes_remaining=result.bytes_remaining,
+                            **base_context,
+                        ),
+                    )
+                else:
+                    logger.info(
+                        "upload completed | {}",
+                        format_log_context(attempt=attempt, exit_code=result.exit_code, **base_context),
+                    )
                 return result
             failure_text = f"{last_result.stderr}\n{last_result.stdout}"
+            logger.warning(
+                "upload attempt failed | {}",
+                format_log_context(
+                    attempt=attempt,
+                    exit_code=last_result.exit_code,
+                    stderr=sanitize_for_log(last_result.stderr),
+                    stdout=sanitize_for_log(last_result.stdout),
+                    **base_context,
+                ),
+            )
             if accept_failed_upload_if_remote_verified(
                 self._config,
                 source,
@@ -450,6 +512,10 @@ class RcloneUploadService:
                     stdout=result.stdout,
                     stderr=result.stderr,
                 )
+                logger.info(
+                    "upload completed after remote verification | {}",
+                    format_log_context(attempt=attempt, exit_code=result.exit_code, **base_context),
+                )
                 return result
             if attempt < max_attempts:
                 self._sleeper(self._config.retry_sleep_seconds)
@@ -469,5 +535,15 @@ class RcloneUploadService:
             message=result.message,
             stdout=result.stdout,
             stderr=result.stderr,
+        )
+        logger.error(
+            "upload failed | {}",
+            format_log_context(
+                attempts=max_attempts,
+                exit_code=result.exit_code,
+                stderr=sanitize_for_log(result.stderr),
+                stdout=sanitize_for_log(result.stdout),
+                **base_context,
+            ),
         )
         return result

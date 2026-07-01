@@ -13,6 +13,7 @@ from src.dashboard_state import (
     DashboardSnapshot,
     DashboardUploadRecord,
     DashboardUploadStatus,
+    DashboardUploadTransfer,
     RoomDisplayStatus,
 )
 from src.dashboard_view import RoomListMode, ViewWidth, allocate_rows, build_dashboard_view
@@ -106,8 +107,26 @@ def test_compact_rooms_prioritize_attention_then_active_statuses(snapshot):
     assert [(row.name, row.status) for row in view.rooms[:3]] == [
         ("主播3", "需要处理"),
         ("主播2", "自动恢复"),
-        ("主播1", "录制"),
+        ("主播1", "录制中"),
     ]
+
+
+def test_room_status_labels_use_user_facing_workflow_terms(snapshot):
+    view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
+
+    statuses = {row.name: row.status for row in view.rooms}
+
+    assert statuses["主播1"] == "录制中"
+    assert statuses["主播4"] == "等待开播"
+
+
+def test_monitoring_room_detail_is_countdown_not_clock_time(snapshot):
+    view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
+
+    waiting_room = next(row for row in view.rooms if row.name == "主播4")
+
+    assert waiting_room.detail == "04:40 后再次检测"
+    assert "下次检测" not in waiting_room.detail
 
 
 def test_expanded_mode_shows_more_rooms_without_hiding_minimum_events(snapshot):
@@ -161,9 +180,9 @@ def test_correlated_event_formats_final_result(snapshot):
 
     view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
 
-    assert view.events[0].label == "处理完成"
+    assert view.events[0].label == "转码完成"
     assert view.events[0].room_name == "主播1"
-    assert view.events[0].detail == "录制完成并转为 MP4 · 1.2 GB · 00:35:26"
+    assert view.events[0].detail == "录制文件已转为 MP4 · 1.2 GB · 00:35:26"
 
 
 def test_complete_phase_exposes_existing_exit_prompt(snapshot):
@@ -189,7 +208,7 @@ def test_recording_detail_sums_segments_and_calculates_bitrate(snapshot, tmp_pat
 
     view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
 
-    assert view.rooms[0].detail == "2.0 MB · 4.0 Mbps"
+    assert view.rooms[0].detail == "已写入 2.0 MB · 平均 4.0 Mbps"
 
 
 def test_dashboard_health_shows_used_and_remaining_disk(snapshot):
@@ -206,8 +225,8 @@ def test_dashboard_health_shows_used_and_remaining_disk(snapshot):
 
     assert [(item.label, item.value) for item in view.health[:3]] == [
         ("FFmpeg", "正常"),
-        ("已占用", "128.6 GB"),
-        ("剩余", "424.3 GB"),
+        ("录制目录", "128.6 GB"),
+        ("磁盘剩余", "424.3 GB"),
     ]
 
 
@@ -219,7 +238,7 @@ def test_dashboard_health_shows_unknown_recording_size(snapshot):
 
     view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
 
-    used = next(item for item in view.health if item.label == "已占用")
+    used = next(item for item in view.health if item.label == "录制目录")
     assert used.value == "未知"
 
 
@@ -239,8 +258,8 @@ def test_dashboard_health_and_config_include_auto_upload(snapshot):
     assert upload_health.value == "运行中"
     assert upload_health.healthy is True
     assert "上传 03:00" in view.config_items
-    assert "WebDAV 123pan" in view.config_items
-    assert "目标 LiveBackup" in view.config_items
+    assert "远端 123pan" in view.config_items
+    assert "远端目录 /LiveBackup" in view.config_items
 
 
 def test_dashboard_upload_detail_is_available_when_expanded(snapshot):
@@ -263,7 +282,10 @@ def test_dashboard_upload_detail_is_available_when_expanded(snapshot):
         upload_detail_expanded=True,
     )
 
-    assert view.upload_detail == "间隔300秒 · 123pan:/LiveBackup/ · webdav timeout · 重试 3/3"
+    assert view.upload_detail == (
+        "计划：每 300 秒检查并上传到 123pan:/LiveBackup/\n"
+        "状态：上传失败，webdav timeout，重试 3/3"
+    )
 
 
 def test_dashboard_upload_detail_includes_recent_records(snapshot):
@@ -295,8 +317,8 @@ def test_dashboard_upload_detail_includes_recent_records(snapshot):
         upload_detail_expanded=True,
     )
 
-    assert "最近记录" in view.upload_detail
-    assert "部分完成" in view.upload_detail
+    assert "最近上传：" in view.upload_detail
+    assert "上传部分完成，待重试" in view.upload_detail
     assert "3 个文件 / 3.0 MB，剩余 1 个 / 1.0 MB" in view.upload_detail
 
 
@@ -330,9 +352,118 @@ def test_dashboard_upload_detail_includes_streamer_file_records(snapshot):
         upload_detail_expanded=True,
     )
 
-    assert "Alice" in view.upload_detail
-    assert "Alice_20260701.mp4" in view.upload_detail
-    assert "1 个文件 / 12.3 MB" in view.upload_detail
+    assert "状态：上传完成，上传完成" not in view.upload_detail
+    assert "21:39:26 上传完成 · Alice · Alice_20260701.mp4 · 1 个文件 / 12.3 MB" in view.upload_detail
+
+
+def test_dashboard_upload_detail_includes_live_transfer_rows_and_waiting_count(snapshot):
+    upload = DashboardUploadStatus(
+        enabled=True,
+        phase="running",
+        trigger="录制结束",
+        target="123pan:/LiveBackup/",
+        detail="2/7 文件 · 43.2% · 8.4 MB/s · 等待 5 个 · Alice_20260701.mp4",
+        files_total=7,
+        files_done=2,
+        files_waiting=5,
+        bytes_transferred=1_500_000_000,
+        bytes_total=3_000_000_000,
+        speed_bytes_per_second=8_388_608,
+        active_transfers=(
+            DashboardUploadTransfer(
+                streamer="Alice",
+                file_name="Alice_20260701.mp4",
+                relative_path="Alice/Alice_20260701.mp4",
+                percent=42.25,
+                speed_bytes_per_second=4_800_000,
+                bytes_transferred=620_000_000,
+                total_bytes=1_400_000_000,
+            ),
+            DashboardUploadTransfer(
+                streamer="Bob",
+                file_name="Bob_20260701.mp4",
+                relative_path="Bob/Bob_20260701.mp4",
+                percent=18.9,
+                speed_bytes_per_second=3_600_000,
+                bytes_transferred=280_000_000,
+                total_bytes=1_600_000_000,
+            ),
+        ),
+    )
+    snapshot = replace(snapshot, upload=upload)
+
+    view = build_dashboard_view(
+        snapshot,
+        width=140,
+        height=40,
+        room_mode=RoomListMode.COMPACT,
+        upload_detail_expanded=True,
+    )
+
+    assert "总体：2/7 文件 · 1.5 GB / 3.0 GB · 8.4 MB/s · 等待 5 个" in view.upload_detail
+    assert "正在上传：" in view.upload_detail
+    assert "Alice · Alice_20260701.mp4 · 42.2% · 4.8 MB/s · 620.0 MB / 1.4 GB" in view.upload_detail
+    assert "Bob · Bob_20260701.mp4 · 18.9% · 3.6 MB/s · 280.0 MB / 1.6 GB" in view.upload_detail
+
+
+def test_dashboard_upload_running_status_avoids_progress_duplication_and_clamps_counts(snapshot):
+    upload = DashboardUploadStatus(
+        enabled=True,
+        phase="running",
+        trigger="录制结束",
+        target="123pan:/LiveBackup/",
+        detail="28/3 文件 · 97.8% · 3.0 MB/s · 14.9 GB / 15.2 GB · 一只小葵_听听歌吧.mp4",
+        attempts=0,
+        retry_limit=4,
+        files_total=3,
+        files_done=28,
+        bytes_transferred=14_900_000_000,
+        bytes_total=15_200_000_000,
+        speed_bytes_per_second=3_000_000,
+    )
+    snapshot = replace(snapshot, upload=upload)
+
+    view = build_dashboard_view(
+        snapshot,
+        width=140,
+        height=40,
+        room_mode=RoomListMode.COMPACT,
+        upload_detail_expanded=True,
+    )
+
+    assert "状态：上传中，重试 0/4" in view.upload_detail
+    assert "总体：3/3 文件 · 14.9 GB / 15.2 GB · 3.0 MB/s" in view.upload_detail
+    assert "28/3 文件" not in view.upload_detail
+
+
+def test_dashboard_upload_skipped_record_shortens_source_path_message(snapshot):
+    upload = DashboardUploadStatus(
+        enabled=True,
+        phase="skipped",
+        trigger="录制结束",
+        target="123pan:/LiveBackup/",
+        detail="source has no files: D:\\Projects\\DouyinLiveRecorder-main\\downloads",
+        records=(
+            DashboardUploadRecord(
+                phase="skipped",
+                message="source has no files: D:\\Projects\\DouyinLiveRecorder-main\\downloads",
+                at=NOW,
+            ),
+        ),
+    )
+    snapshot = replace(snapshot, upload=upload)
+
+    view = build_dashboard_view(
+        snapshot,
+        width=140,
+        height=40,
+        room_mode=RoomListMode.COMPACT,
+        upload_detail_expanded=True,
+    )
+
+    assert "source has no files:" not in view.upload_detail
+    assert "没有找到可上传文件" in view.upload_detail
+    assert "downloads" in view.upload_detail
 
 
 def test_upload_events_have_specific_labels(snapshot):
@@ -354,7 +485,7 @@ def test_recording_detail_survives_missing_output_file(snapshot):
 
     view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
 
-    assert view.rooms[0].detail == "主播.ts · 正在写入"
+    assert view.rooms[0].detail == "正在写入 主播.ts"
 
 
 def test_recording_finished_event_does_not_claim_the_stream_ended(snapshot):
@@ -365,8 +496,42 @@ def test_recording_finished_event_does_not_claim_the_stream_ended(snapshot):
 
     view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
 
-    assert view.events[0].label == "录制结束"
+    assert view.events[0].label == "录制文件完成"
     assert view.events[0].label != "直播结束"
+
+
+def test_recording_started_event_does_not_repeat_room_name(snapshot):
+    snapshot = replace(
+        snapshot,
+        events=(DashboardEvent("room-1", "recording_started", "主播1 开始录制", NOW),),
+        incidents=(),
+    )
+
+    view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
+
+    assert view.events[0].label == "录制开始"
+    assert view.events[0].detail == "已打开直播流，正在写入文件"
+
+
+def test_segment_conversion_watch_event_does_not_claim_conversion_started(snapshot):
+    snapshot = replace(
+        snapshot,
+        events=(
+            DashboardEvent(
+                "room-1",
+                "segment_conversion_watch_started",
+                "分段录制已启用，完成的分段会自动转 MP4",
+                NOW,
+            ),
+        ),
+        incidents=(),
+    )
+
+    view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
+
+    assert view.events[0].label == "分段监控"
+    assert view.events[0].detail == "分段录制已启用，完成的分段会自动转 MP4"
+    assert view.events[0].label != "转码开始"
 
 
 def test_compact_mode_shows_ten_rooms_when_height_allows(snapshot):

@@ -3,6 +3,7 @@ import pytest
 
 from src.models import UploadConfig
 from src.uploader.rclone_rc import (
+    UPLOAD_JOB_GROUP,
     RcloneRcClient,
     RcloneRcDaemon,
     RcloneRcError,
@@ -156,6 +157,28 @@ def test_rc_client_job_status_posts_job_id():
 
     assert response == {"finished": True, "success": True}
     assert b'"jobid":7' in seen_payloads[0]
+
+
+def test_rc_client_core_stats_posts_upload_group():
+    seen_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(request.read())
+        return httpx.Response(
+            200,
+            json={
+                "bytes": 1_500_000,
+                "speed": 512_000,
+                "transferring": [{"name": "Alice/Alice_20260701.mp4"}],
+            },
+        )
+
+    client = RcloneRcClient(base_url="http://127.0.0.1:5572", transport=httpx.MockTransport(handler))
+
+    response = client.core_stats()
+
+    assert response["bytes"] == 1_500_000
+    assert b'"group":"' + UPLOAD_JOB_GROUP.encode() + b'"' in seen_payloads[0]
 
 
 class FakeProcess:

@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from src.diagnostic_logging import format_log_context, sanitize_command
+from src.logger import logger
+
 
 class ConversionError(RuntimeError):
     pass
@@ -115,9 +118,17 @@ class FFmpegConverter:
         temporary = source.with_suffix(".converting.mp4")
         temporary.unlink(missing_ok=True)
         try:
+            logger.info(
+                "conversion started | {}",
+                format_log_context(source=source, target=final, transcode_h264=transcode_h264),
+            )
             try:
                 duration = self._probe_duration(source)
-            except Exception:
+            except Exception as error:
+                logger.opt(exception=error).warning(
+                    "conversion probe failed | {}",
+                    format_log_context(source=source, target=final),
+                )
                 duration = None
 
             self._notify(on_progress, ConversionProgress(source, 0.0, duration))
@@ -130,10 +141,12 @@ class FFmpegConverter:
             }
             if startupinfo is not None:
                 kwargs["startupinfo"] = startupinfo
-            process = self._process_factory(
-                self.build_command(source, temporary, transcode_h264=transcode_h264),
-                **kwargs,
+            command = self.build_command(source, temporary, transcode_h264=transcode_h264)
+            logger.debug(
+                "conversion ffmpeg command prepared | {}",
+                format_log_context(command=" ".join(sanitize_command(command)), source=source, target=final),
             )
+            process = self._process_factory(command, **kwargs)
             elapsed = 0.0
             diagnostics: list[str] = []
             for line in self._lines(process.stdout):
@@ -152,8 +165,25 @@ class FFmpegConverter:
             return_code = process.wait()
             if return_code != 0:
                 detail = " | ".join(diagnostics) or f"ffmpeg exited with code {return_code}"
+                logger.error(
+                    "conversion failed | {}",
+                    format_log_context(
+                        detail=detail,
+                        return_code=return_code,
+                        source=source,
+                        target=final,
+                    ),
+                )
                 raise ConversionError(detail)
             if not temporary.is_file() or temporary.stat().st_size <= 0:
+                logger.error(
+                    "conversion failed | {}",
+                    format_log_context(
+                        detail="ffmpeg completed without producing an MP4 file",
+                        source=source,
+                        target=final,
+                    ),
+                )
                 raise ConversionError("ffmpeg completed without producing an MP4 file")
 
             temporary.replace(final)
@@ -161,6 +191,10 @@ class FFmpegConverter:
                 source.unlink()
             completed_elapsed = duration if duration is not None else elapsed
             self._notify(on_progress, ConversionProgress(source, completed_elapsed, duration, finished=True))
+            logger.info(
+                "conversion completed | {}",
+                format_log_context(source=source, target=final, duration_seconds=completed_elapsed),
+            )
             return final
         except Exception:
             temporary.unlink(missing_ok=True)

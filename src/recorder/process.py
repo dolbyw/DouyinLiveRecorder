@@ -10,6 +10,9 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any
 
+from src.diagnostic_logging import format_log_context, sanitize_command
+from src.logger import logger
+
 from .models import EndReason, ProcessResult
 
 _URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
@@ -54,8 +57,16 @@ class RecorderProcess:
         if startupinfo is not None:
             kwargs["startupinfo"] = startupinfo
         try:
+            logger.debug(
+                "ffmpeg process started | {}",
+                format_log_context(command=" ".join(sanitize_command(command))),
+            )
             process = self._process_factory(command, **kwargs)
         except Exception as error:
+            logger.opt(exception=error).error(
+                "ffmpeg process failed to start | {}",
+                format_log_context(command=" ".join(sanitize_command(command))),
+            )
             return ProcessResult(EndReason.FAILED_TO_START, error=error)
         if on_started is not None:
             on_started(process)
@@ -71,7 +82,7 @@ class RecorderProcess:
                     return self._result(EndReason.COMMENT_STOPPED, return_code, None, output_reader, output_tail)
                 if should_exit():
                     return self._result(EndReason.EXIT_STOPPED, return_code, None, output_reader, output_tail)
-                return self._result(EndReason.FAILED, return_code, None, output_reader, output_tail)
+                return self._result(EndReason.FAILED, return_code, None, output_reader, output_tail, command=command)
 
             if should_comment_stop():
                 return self._stop(process, EndReason.COMMENT_STOPPED, output_reader, output_tail)
@@ -110,10 +121,11 @@ class RecorderProcess:
                     timeout_error,
                     output_reader,
                     output_tail,
+                    command=None,
                 )
         except Exception as error:
-            return self._result(EndReason.FAILED, None, error, output_reader, output_tail)
-        return self._result(reason, return_code, None, output_reader, output_tail)
+            return self._result(EndReason.FAILED, None, error, output_reader, output_tail, command=None)
+        return self._result(reason, return_code, None, output_reader, output_tail, command=None)
 
     @staticmethod
     def _start_output_reader(process: Any, output_tail: deque[str]) -> threading.Thread | None:
@@ -141,7 +153,23 @@ class RecorderProcess:
         error: BaseException | None,
         output_reader: threading.Thread | None,
         output_tail: deque[str],
+        *,
+        command: list[str] | None = None,
     ) -> ProcessResult:
         if output_reader is not None:
             output_reader.join(timeout=1)
+        if reason is EndReason.FAILED:
+            context = {
+                "return_code": return_code,
+                "tail": " | ".join(sanitize_output_tail(tuple(output_tail))),
+            }
+            if command is not None:
+                context["command"] = " ".join(sanitize_command(command))
+            if error is not None:
+                logger.opt(exception=error).error(
+                    "ffmpeg process exited unexpectedly | {}",
+                    format_log_context(**context),
+                )
+            else:
+                logger.error("ffmpeg process exited unexpectedly | {}", format_log_context(**context))
         return ProcessResult(reason, return_code, error, tuple(output_tail))

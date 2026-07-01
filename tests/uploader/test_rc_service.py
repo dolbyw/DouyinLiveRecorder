@@ -1,8 +1,8 @@
 from pathlib import Path
 
 from src.models import UploadConfig
-from src.uploader.rc_service import RcloneRcUploadProgress, RcloneRcUploadService
-from src.uploader.rclone_rc import RcloneRcError
+from src.uploader.rc_service import RcloneRcTransferProgress, RcloneRcUploadProgress, RcloneRcUploadService
+from src.uploader.rclone_rc import UPLOAD_JOB_GROUP, RcloneRcError
 
 
 class FakeDaemon:
@@ -28,14 +28,16 @@ class PreparingFakeDaemon(FakeDaemon):
 
 
 class FakeRcClient:
-    def __init__(self, statuses):
+    def __init__(self, statuses, stats=None):
         self.statuses = list(statuses)
+        self.stats = list(stats or [])
         self.started = []
+        self.stats_groups = []
         self.job_ids = []
         self.delete_on_success_path = None
 
-    def start_move(self, config, source_path):
-        self.started.append((config, Path(source_path)))
+    def start_move(self, config, source_path, *, group=UPLOAD_JOB_GROUP):
+        self.started.append((config, Path(source_path), group))
         return 7
 
     def job_status(self, job_id):
@@ -44,6 +46,10 @@ class FakeRcClient:
         if status.get("finished") and status.get("success") and self.delete_on_success_path is not None:
             self.delete_on_success_path.unlink(missing_ok=True)
         return status
+
+    def core_stats(self, group=UPLOAD_JOB_GROUP):
+        self.stats_groups.append(group)
+        return self.stats.pop(0)
 
 
 def test_rc_upload_service_skips_missing_or_empty_source(tmp_path):
@@ -87,10 +93,35 @@ def test_rc_upload_service_waits_for_async_job_success(tmp_path):
     assert result.attempts == 1
     assert result.message == "upload completed"
     assert daemon.started == 1
-    assert client.started == [(service.config, source)]
+    assert client.started[0][:2] == (service.config, source)
     assert client.job_ids == [7, 7]
     assert sleeps == [2]
     assert service.status.phase == "success"
+
+
+def test_rc_upload_service_uses_isolated_stats_group_per_upload_run(tmp_path):
+    source = tmp_path / "downloads"
+    source.mkdir()
+    (source / "room.ts").write_bytes(b"x")
+    client = FakeRcClient(
+        [
+            {"finished": False, "success": False, "progress": {"percentage": 50}},
+            {"finished": True, "success": True, "output": {"transferred": "1 file"}},
+        ],
+        stats=[{"bytes": 1, "totalBytes": 2, "transfers": 0}],
+    )
+    service = RcloneRcUploadService(
+        UploadConfig(enabled=True),
+        daemon=FakeDaemon(),
+        client=client,
+        sleeper=lambda _seconds: None,
+    )
+
+    service.run_once(source)
+
+    upload_group = client.started[0][2]
+    assert upload_group.startswith(f"{UPLOAD_JOB_GROUP}-")
+    assert client.stats_groups == [upload_group]
 
 
 def test_rc_upload_service_stops_running_job_when_shutdown_is_requested(tmp_path):
@@ -188,9 +219,134 @@ def test_rc_upload_service_reports_progress_callback_from_job_status(tmp_path):
             bytes_transferred=1_500_000_000,
             total_bytes=3_000_000_000,
             current_file="room.ts",
+            files_total=1,
         )
     ]
     assert service.status.message == "upload completed"
+
+
+def test_rc_upload_service_reports_group_stats_active_transfers_and_waiting_count(tmp_path):
+    source = tmp_path / "downloads"
+    (source / "Alice").mkdir(parents=True)
+    (source / "Bob").mkdir()
+    (source / "Carol").mkdir()
+    (source / "Alice" / "Alice_20260701.mp4").write_bytes(b"x" * 1_000_000)
+    (source / "Bob" / "Bob_20260701.mp4").write_bytes(b"x" * 2_000_000)
+    (source / "Carol" / "Carol_20260701.mp4").write_bytes(b"x" * 3_000_000)
+    progress_events = []
+    client = FakeRcClient(
+        [
+            {"finished": False, "success": False, "progress": {"percentage": 33.3}},
+            {"finished": True, "success": True, "output": {"transferred": "3 files"}},
+        ],
+        stats=[
+            {
+                "bytes": 1_500_000,
+                "totalBytes": 6_000_000,
+                "speed": 800_000,
+                "transfers": 1,
+                "transferring": [
+                    {
+                        "name": "Alice/Alice_20260701.mp4",
+                        "bytes": 500_000,
+                        "size": 1_000_000,
+                        "percentage": 50,
+                        "speed": 300_000,
+                    },
+                    {
+                        "name": "Bob/Bob_20260701.mp4",
+                        "bytes": 1_000_000,
+                        "size": 2_000_000,
+                        "percentage": 50,
+                        "speed": 500_000,
+                    },
+                ],
+            }
+        ],
+    )
+    client.delete_on_success_path = source / "Alice" / "Alice_20260701.mp4"
+    service = RcloneRcUploadService(
+        UploadConfig(enabled=True),
+        daemon=FakeDaemon(),
+        client=client,
+        sleeper=lambda _seconds: None,
+        progress_callback=progress_events.append,
+    )
+
+    service.run_once(source)
+
+    assert progress_events == [
+        RcloneRcUploadProgress(
+            percent=25.0,
+            speed_bytes_per_second=800_000,
+            bytes_transferred=1_500_000,
+            total_bytes=6_000_000,
+            current_file="Alice/Alice_20260701.mp4",
+            files_total=3,
+            files_done=1,
+            files_waiting=0,
+            active_transfers=(
+                RcloneRcTransferProgress(
+                    name="Alice/Alice_20260701.mp4",
+                    percent=50.0,
+                    speed_bytes_per_second=300_000,
+                    bytes_transferred=500_000,
+                    total_bytes=1_000_000,
+                ),
+                RcloneRcTransferProgress(
+                    name="Bob/Bob_20260701.mp4",
+                    percent=50.0,
+                    speed_bytes_per_second=500_000,
+                    bytes_transferred=1_000_000,
+                    total_bytes=2_000_000,
+                ),
+            ),
+        )
+    ]
+
+
+def test_rc_upload_progress_clamps_cumulative_transfer_count_to_current_run(tmp_path):
+    source = tmp_path / "downloads"
+    source.mkdir()
+    for index in range(3):
+        (source / f"room-{index}.mp4").write_bytes(b"x" * 1_000_000)
+    progress_events = []
+    client = FakeRcClient(
+        [
+            {"finished": False, "success": False, "progress": {"percentage": 97.8}},
+            {"finished": True, "success": True, "output": {"transferred": "3 files"}},
+        ],
+        stats=[
+            {
+                "bytes": 2_900_000,
+                "totalBytes": 3_000_000,
+                "speed": 800_000,
+                "transfers": 28,
+                "transferring": [
+                    {
+                        "name": "room-2.mp4",
+                        "bytes": 900_000,
+                        "size": 1_000_000,
+                        "percentage": 90,
+                        "speed": 300_000,
+                    },
+                ],
+            }
+        ],
+    )
+    service = RcloneRcUploadService(
+        UploadConfig(enabled=True),
+        daemon=FakeDaemon(),
+        client=client,
+        sleeper=lambda _seconds: None,
+        progress_callback=progress_events.append,
+    )
+
+    service.run_once(source)
+
+    assert progress_events[0].files_total == 3
+    assert progress_events[0].files_done == 3
+    assert progress_events[0].files_waiting == 0
 
 
 def test_rc_upload_service_reports_partial_success_when_files_remain_after_job_success(tmp_path):
@@ -322,7 +478,8 @@ def test_rc_upload_service_retries_when_start_move_raises(tmp_path):
         def __init__(self):
             self.calls = 0
 
-        def start_move(self, _config, _source_path):
+        def start_move(self, _config, _source_path, *, group=UPLOAD_JOB_GROUP):
+            del group
             self.calls += 1
             raise RuntimeError("rc unavailable")
 

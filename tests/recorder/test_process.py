@@ -2,6 +2,7 @@ import io
 import signal
 import subprocess
 
+from src.logger import logger
 from src.recorder.models import EndReason
 from src.recorder.process import RecorderProcess, sanitize_output_tail
 
@@ -36,6 +37,12 @@ def make_runner(process, platform_name="Windows"):
     )
 
 
+def capture_logs():
+    messages = []
+    sink_id = logger.add(messages.append, format="{level}|{message}", level="DEBUG", diagnose=False)
+    return messages, sink_id
+
+
 def test_natural_zero_exit_is_completed():
     result = make_runner(FakeProcess([0])).run(["ffmpeg"], should_comment_stop=lambda: False, should_exit=lambda: False)
     assert result.reason is EndReason.COMPLETED
@@ -60,6 +67,27 @@ def test_nonzero_exit_is_failed_and_keeps_return_code():
     result = make_runner(FakeProcess([7])).run(["ffmpeg"], should_comment_stop=lambda: False, should_exit=lambda: False)
     assert result.reason is EndReason.FAILED
     assert result.return_code == 7
+
+
+def test_process_start_and_nonzero_exit_are_logged_with_sanitized_command():
+    messages, sink_id = capture_logs()
+    try:
+        result = make_runner(FakeProcess([7], output=b"Cookie: secret\nhttp://x.test/live?token=abc\n")).run(
+            ["ffmpeg", "-headers", "Cookie: secret", "-i", "http://x.test/live?token=abc"],
+            should_comment_stop=lambda: False,
+            should_exit=lambda: False,
+        )
+    finally:
+        logger.remove(sink_id)
+
+    output = "\n".join(messages)
+    assert result.reason is EndReason.FAILED
+    assert "ffmpeg process started" in output
+    assert "ffmpeg process exited unexpectedly" in output
+    assert "return_code=7" in output
+    assert "Cookie: secret" not in output
+    assert "token=abc" not in output
+    assert "[REDACTED]" in output
 
 
 def test_process_drains_output_and_returns_bounded_tail():
@@ -107,6 +135,29 @@ def test_factory_exception_is_failed_to_start():
     )
     assert result.reason is EndReason.FAILED_TO_START
     assert result.error is error
+
+
+def test_process_factory_exception_logs_traceback_and_command_context():
+    error = OSError("missing ffmpeg")
+
+    def broken_factory(*args, **kwargs):
+        raise error
+
+    messages, sink_id = capture_logs()
+    try:
+        result = RecorderProcess(process_factory=broken_factory).run(
+            ["ffmpeg", "-i", "http://x.test/live?token=abc"],
+            should_comment_stop=lambda: False,
+            should_exit=lambda: False,
+        )
+    finally:
+        logger.remove(sink_id)
+
+    output = "\n".join(messages)
+    assert result.reason is EndReason.FAILED_TO_START
+    assert "ffmpeg process failed to start" in output
+    assert "missing ffmpeg" in output
+    assert "token=abc" not in output
 
 
 def test_windows_comment_stop_writes_q_once_and_waits():

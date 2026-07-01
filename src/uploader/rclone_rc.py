@@ -35,7 +35,12 @@ def build_rcd_command(config: UploadConfig, *, app_root: str | Path | None = Non
     ]
 
 
-def build_sync_move_payload(config: UploadConfig, source_path: str | Path) -> dict[str, Any]:
+def build_sync_move_payload(
+    config: UploadConfig,
+    source_path: str | Path,
+    *,
+    group: str = UPLOAD_JOB_GROUP,
+) -> dict[str, Any]:
     filter_config: dict[str, Any] = {
         "MinAge": config.min_age,
     }
@@ -46,7 +51,7 @@ def build_sync_move_payload(config: UploadConfig, source_path: str | Path) -> di
         "dstFs": config.remote_path,
         "deleteEmptySrcDirs": config.delete_empty_dirs,
         "_async": True,
-        "_group": UPLOAD_JOB_GROUP,
+        "_group": group,
         "_config": {
             "Transfers": config.transfers,
             "Checkers": config.checkers,
@@ -87,8 +92,14 @@ class RcloneRcClient:
             raise RcloneRcError(f"unexpected rclone rc response: {body!r}")
         return body
 
-    def start_move(self, config: UploadConfig, source_path: str | Path) -> int:
-        response = self.post("sync/move", build_sync_move_payload(config, source_path))
+    def start_move(
+        self,
+        config: UploadConfig,
+        source_path: str | Path,
+        *,
+        group: str = UPLOAD_JOB_GROUP,
+    ) -> int:
+        response = self.post("sync/move", build_sync_move_payload(config, source_path, group=group))
         try:
             return int(response["jobid"])
         except (KeyError, TypeError, ValueError) as error:
@@ -96,6 +107,9 @@ class RcloneRcClient:
 
     def job_status(self, job_id: int) -> dict[str, Any]:
         return self.post("job/status", {"jobid": job_id})
+
+    def core_stats(self, group: str = UPLOAD_JOB_GROUP) -> dict[str, Any]:
+        return self.post("core/stats", {"group": group})
 
     def noop(self) -> dict[str, Any]:
         return self.post("rc/noop", {})

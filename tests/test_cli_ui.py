@@ -162,15 +162,15 @@ def test_wide_dashboard_matches_approved_full_width_hierarchy():
         "DouyinLiveRecorder",
         "运行正常",
         "直播间",
-        "录制",
-        "监控",
+        "录制中",
+        "等待开播",
         "需处理",
-        "已占用",
-        "剩余",
+        "录制目录",
+        "磁盘剩余",
         "TS → MP4",
         "[R] 展开",
-        "运行动态",
-        "完整技术日志",
+        "最近动态",
+        "技术日志",
         "保存目录没有写入权限",
     ):
         assert text in output
@@ -196,15 +196,16 @@ def test_wide_dashboard_uses_left_aligned_section_titles_and_labeled_config():
     output = render(view, width=140)
 
     assert "┤ 直播间" not in output
-    assert "┤ 运行动态" not in output
+    assert "┤ 最近动态" not in output
     assert "配置" in output
-    assert "保存" in output
+    assert "本地保存" in output
     assert "自动上传 · [U] 展开" in output
-    assert "录制结束 · 123pan:/LiveBackup/" in output
+    assert "计划：文件完成后上传到 123pan:/LiveBackup/" in output
     config_panel = panel_text(output, "配置")
-    assert "上传 录后" in config_panel
-    assert "WebDAV 123pan" in config_panel
-    assert "目标 LiveBackup" in config_panel
+    assert "上传 文件完成后" in config_panel
+    assert "远端 123pan" in config_panel
+    assert "远端目录 /LiveBackup" in config_panel
+    assert "本地保存" in config_panel
     assert "D:/Projects/DouyinLiveRecorder-main/dist/DouyinLiveRecorder/downloads" in config_panel
     assert "..." not in config_panel
 
@@ -217,7 +218,7 @@ def test_collapsed_upload_status_has_discoverable_u_hint_without_header_wrap():
             phase="idle",
             trigger="录制结束",
             target="123pan:/LiveBackup/",
-            detail="等待录制结束",
+            detail="等待新的已完成文件",
         ),
     )
     view = build_dashboard_view(snapshot, width=140, height=42, room_mode=RoomListMode.COMPACT)
@@ -225,7 +226,8 @@ def test_collapsed_upload_status_has_discoverable_u_hint_without_header_wrap():
     output = render(view, width=140)
 
     assert "自动上传 · [U] 展开" in output
-    assert "录制结束 · 123pan:/LiveBackup/ · 等待录制结束" in output
+    assert "计划：文件完成后上传到 123pan:/LiveBackup/" in output
+    assert "状态：等待新的已完成文件" in output
     assert "✓ 上传" not in panel_text(output, "DouyinLiveRecorder")
 
 
@@ -234,6 +236,7 @@ def test_medium_dashboard_merges_quality_into_detail():
 
     assert "名称 / 平台" in output
     assert "状态" in output
+    assert "等待开播" in output
     assert "质量" not in output
     assert "原画" in output
 
@@ -243,7 +246,7 @@ def test_narrow_dashboard_keeps_full_actionable_message():
 
     assert "需要处理" in output
     assert "保存目录没有写入权限" in output
-    assert "运行动态" in output
+    assert "最近动态" in output
 
 
 def test_expanded_room_title_changes_toggle_hint():
@@ -283,7 +286,7 @@ def test_plain_dashboard_uses_same_view_without_sensitive_fields():
 
     assert "招财" in output
     assert "需要处理" in output
-    assert "运行动态" in output
+    assert "最近动态" in output
     for secret in ("cookie", "token", "密码"):
         assert secret not in output.lower()
 

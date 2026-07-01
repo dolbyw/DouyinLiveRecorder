@@ -1,6 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
+from src.logger import logger
 from src.models import UploadConfig
 from src.uploader.service import (
     RcloneResult,
@@ -12,6 +13,12 @@ from src.uploader.service import (
     resolve_upload_source,
     seconds_until_next_daily_run,
 )
+
+
+def capture_logs():
+    messages = []
+    sink_id = logger.add(messages.append, format="{level}|{message}", level="DEBUG", diagnose=False)
+    return messages, sink_id
 
 
 def test_build_rclone_move_command_uses_safe_webdav_defaults(tmp_path):
@@ -226,6 +233,31 @@ def test_run_once_reports_partial_success_when_files_remain_after_move(tmp_path)
     assert "仍有 1 个文件待上传" in result.message
 
 
+def test_run_once_logs_partial_success_with_remaining_file_context(tmp_path):
+    source = tmp_path / "downloads"
+    source.mkdir()
+    (source / "still-cooling.ts").write_bytes(b"x" * 5)
+
+    def runner(_command):
+        return RcloneResult(exit_code=0, stdout="Transferred: 1 file", stderr="")
+
+    service = RcloneUploadService(UploadConfig(enabled=True), runner=runner)
+    messages, sink_id = capture_logs()
+    try:
+        result = service.run_once(source)
+    finally:
+        logger.remove(sink_id)
+
+    output = "\n".join(messages)
+    assert result.phase == "partial"
+    assert "upload attempt started" in output
+    assert "upload partially completed" in output
+    assert f"source={source}" in output
+    assert "remote=123pan:/LiveBackup/" in output
+    assert "files_remaining=1" in output
+    assert "bytes_remaining=5" in output
+
+
 def test_run_once_ignores_excluded_files_when_deciding_success(tmp_path):
     source = tmp_path / "downloads"
     source.mkdir()
@@ -295,6 +327,38 @@ def test_run_once_prepares_webdav_remote_before_upload(tmp_path):
     assert calls[1][:2] == ["rclone", "move"]
 
 
+def test_webdav_remote_config_failure_logs_without_password(tmp_path):
+    source = tmp_path / "downloads"
+    source.mkdir()
+    (source / "room.ts").write_bytes(b"x")
+
+    def runner(_command):
+        return RcloneResult(exit_code=7, stderr="login failed")
+
+    service = RcloneUploadService(
+        UploadConfig(
+            enabled=True,
+            webdav_remote_name="123pan",
+            webdav_url="https://webdav.example.com/dav?token=abc",
+            webdav_username="user@example.com",
+            webdav_password="plain-password",
+        ),
+        runner=runner,
+    )
+    messages, sink_id = capture_logs()
+    try:
+        result = service.run_once(source)
+    finally:
+        logger.remove(sink_id)
+
+    output = "\n".join(messages)
+    assert result.phase == "failed"
+    assert "upload remote config failed" in output
+    assert "plain-password" not in output
+    assert "token=abc" not in output
+    assert "[REDACTED]" in output
+
+
 def test_run_once_retries_failed_uploads_with_app_retry_limit(tmp_path):
     source = tmp_path / "downloads"
     source.mkdir()
@@ -321,6 +385,37 @@ def test_run_once_retries_failed_uploads_with_app_retry_limit(tmp_path):
     assert len(calls) == 3
     assert sleeps == [15, 15]
     assert service.status.phase == "failed"
+
+
+def test_run_once_logs_failed_attempts_with_exit_code_and_context(tmp_path):
+    source = tmp_path / "downloads"
+    source.mkdir()
+    (source / "room.ts").write_bytes(b"x")
+
+    def runner(_command):
+        return RcloneResult(exit_code=9, stdout="", stderr="webdav timeout token=abc")
+
+    service = RcloneUploadService(
+        UploadConfig(enabled=True, app_retries=1, retry_sleep_seconds=0),
+        runner=runner,
+        sleeper=lambda _seconds: None,
+    )
+    messages, sink_id = capture_logs()
+    try:
+        result = service.run_once(source)
+    finally:
+        logger.remove(sink_id)
+
+    output = "\n".join(messages)
+    assert result.phase == "failed"
+    assert "upload attempt started" in output
+    assert "upload attempt failed" in output
+    assert "upload failed" in output
+    assert "exit_code=9" in output
+    assert "attempt=2" in output
+    assert f"source={source}" in output
+    assert "remote=123pan:/LiveBackup/" in output
+    assert "token=abc" not in output
 
 
 def test_run_once_accepts_123pan_object_not_found_when_remote_files_verify(tmp_path):

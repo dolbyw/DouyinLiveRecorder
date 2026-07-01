@@ -128,7 +128,7 @@ def _render_config(view: DashboardView) -> Any:
     content.add_column(no_wrap=True, overflow="ellipsis")
     summary = Text(" · ".join(view.config_items), style="dim", no_wrap=True, overflow="ellipsis")
     save_path = Text()
-    save_path.append("保存 ", style="dim")
+    save_path.append("本地保存 ", style="dim")
     save_path.append(view.save_path, style="white")
     content.add_row(summary)
     content.add_row(save_path)
@@ -166,7 +166,7 @@ def _render_rooms(view: DashboardView) -> Any:
         if view.width_mode is ViewWidth.WIDE:
             content.add_column("质量", width=6)
         content.add_column("时长 / 进度", width=14, overflow="ellipsis", no_wrap=True)
-        content.add_column("详情", ratio=3, overflow="ellipsis", no_wrap=True)
+        content.add_column("当前信息", ratio=3, overflow="ellipsis", no_wrap=True)
         for room in view.rooms:
             detail = room.detail
             row: list[Any] = [
@@ -214,7 +214,7 @@ def _render_activity(view: DashboardView) -> Any:
 
     event_table = Table(expand=True, show_header=True, header_style="dim", box=None, padding=(0, 1))
     if view.width_mode is ViewWidth.NARROW:
-        event_table.add_column("最近变化", ratio=1)
+        event_table.add_column("说明", ratio=1)
         for event in view.events:
             line = Text(f"{event.time}  ", style="dim")
             line.append(event.label, style=_KIND_STYLES[event.kind])
@@ -222,9 +222,9 @@ def _render_activity(view: DashboardView) -> Any:
             event_table.add_row(line)
     else:
         event_table.add_column("时间", width=9)
-        event_table.add_column("事件", width=12)
-        event_table.add_column("直播间", ratio=1, overflow="ellipsis", no_wrap=True)
-        event_table.add_column("发生了什么", ratio=2, overflow="ellipsis", no_wrap=True)
+        event_table.add_column("阶段", width=12)
+        event_table.add_column("对象", ratio=1, overflow="ellipsis", no_wrap=True)
+        event_table.add_column("说明", ratio=2, overflow="ellipsis", no_wrap=True)
         for event in view.events:
             event_table.add_row(
                 Text(event.time, style="dim"),
@@ -236,13 +236,13 @@ def _render_activity(view: DashboardView) -> Any:
         event_table.add_row(Text("暂无状态变化", style="dim"))
     blocks.append(event_table)
 
-    footer = Text("完整技术日志：logs/streamget.log", style="dim")
+    footer = Text("技术日志：logs/streamget.log", style="dim")
     if view.hidden_event_count:
         footer.append(f"   较早 {view.hidden_event_count} 条已收起", style="dim")
     blocks.append(footer)
     actionable = sum(incident.kind == "danger" for incident in view.incidents)
     automatic = sum(incident.kind == "warning" for incident in view.incidents)
-    title = Text(f"运行动态  需处理 {actionable} · 自动恢复 {automatic}", style="bold white")
+    title = Text(f"最近动态  需处理 {actionable} · 自动重试 {automatic}", style="bold white")
     return Panel(Group(*blocks), title=title, border_style="bright_black", title_align="left", padding=(0, 1))
 
 
@@ -288,14 +288,14 @@ def build_plain_dashboard(view: DashboardView) -> str:
         lines.append(f"自动上传 | {view.upload_detail}")
     if view.hidden_room_count:
         lines.append(f"还有 {view.hidden_room_count} 个房间未显示")
-    lines.append("运行动态")
+    lines.append("最近动态")
     for incident in view.incidents:
         lines.append(
             f"{incident.disposition} | {incident.room_name} | {incident.message} | {incident.detail}"
         )
     for event in view.events:
         lines.append(f"{event.time} | {event.label} | {event.room_name} | {event.detail}")
-    lines.append("完整技术日志：logs/streamget.log")
+    lines.append("技术日志：logs/streamget.log")
     if view.complete_prompt:
         lines.append(view.complete_prompt)
     return "\n".join(lines)
