@@ -21,6 +21,7 @@ import threading
 import time
 import urllib.request
 import uuid
+from dataclasses import replace
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -50,7 +51,7 @@ from src.dashboard_view import RoomListMode, build_dashboard_view
 from src.http_clients.client_pool import close_async_clients_for_current_loop
 from src.http_clients.runner import run_async, run_async_batch
 from src.logger import disable_console_logging
-from src.models import UploadConfig, normalize_stream_info
+from src.models import SaveType, UploadConfig, normalize_stream_info
 from src.platforms import DispatchResult, default_registry, try_resolve
 from src.proxy import ProxyDetector
 from src.recorder import (
@@ -60,6 +61,8 @@ from src.recorder import (
     RecordingPipeline,
     RecordRequest,
     SaveFormat,
+    SegmentConversionQueue,
+    SegmentFinalizer,
 )
 from src.runtime import (
     AdjustableLimiter,
@@ -154,12 +157,14 @@ dashboard_input = DashboardInputController(on_change=dashboard_refresh_event.set
 dashboard_key_reader: DashboardKeyReader | None = None
 recording_size_cache = RecordingDirectorySizeCache()
 upload_service_lock = threading.Lock()
+upload_run_lock = threading.Lock()
 upload_status_lock = threading.Lock()
 upload_recording_finished_event = threading.Event()
 upload_shutdown_event = threading.Event()
 upload_dashboard_status = DashboardUploadStatus()
 upload_service_generation = 0
 upload_service_signature: tuple | None = None
+UPLOAD_TRIGGER_DEBOUNCE_SECONDS = 10
 os_type = os.name
 clear_command = "cls" if os_type == 'nt' else "clear"
 os.environ['PATH'] = ffmpeg_path + os.pathsep + current_env_path
@@ -528,6 +533,7 @@ def upload_config_signature(upload_config: UploadConfig, recording_save_path: st
         upload_config.webdav_vendor,
         upload_config.delete_empty_dirs,
         upload_config.dry_run,
+        upload_config.exclude_patterns,
     )
 
 
@@ -538,6 +544,38 @@ def upload_generation_active(generation: int) -> bool:
 
 def notify_recording_finished_upload() -> None:
     upload_recording_finished_event.set()
+
+
+def debounce_recording_finished_upload_trigger(generation: int) -> bool:
+    remaining_seconds = UPLOAD_TRIGGER_DEBOUNCE_SECONDS
+    while remaining_seconds > 0:
+        if upload_shutdown_requested() or not upload_generation_active(generation):
+            return False
+        if upload_recording_finished_event.wait(1):
+            upload_recording_finished_event.clear()
+            remaining_seconds = UPLOAD_TRIGGER_DEBOUNCE_SECONDS
+            continue
+        remaining_seconds -= 1
+    return True
+
+
+def acquire_upload_run_slot(generation: int, trigger: str, target: str) -> bool:
+    waiting_status_published = False
+    while not upload_shutdown_requested() and upload_generation_active(generation):
+        if upload_run_lock.acquire(timeout=1):
+            return True
+        if not waiting_status_published:
+            waiting_status_published = True
+            publish_upload_status(
+                DashboardUploadStatus(
+                    enabled=True,
+                    phase="idle",
+                    trigger=trigger,
+                    target=target,
+                    detail="等待上一轮上传完成",
+                )
+            )
+    return False
 
 
 def request_upload_shutdown() -> bool:
@@ -572,7 +610,12 @@ def upload_shutdown_requested() -> bool:
     return upload_shutdown_event.is_set()
 
 
-def upload_worker(upload_config: UploadConfig, recording_save_path: str, generation: int) -> None:
+def upload_worker(
+        upload_config: UploadConfig,
+        recording_save_path: str,
+        generation: int,
+        initial_scan: bool = False,
+) -> None:
     source_path = resolve_upload_source(upload_config, recording_save_path, default_path)
     upload_config_for_run = prepare_upload_config_for_run(upload_config)
     upload_service = create_upload_service(
@@ -583,19 +626,24 @@ def upload_worker(upload_config: UploadConfig, recording_save_path: str, generat
     trigger = describe_upload_trigger(upload_config)
     while not upload_shutdown_requested() and upload_generation_active(generation):
         if upload_config.trigger_mode == "录制结束":
-            publish_upload_status(
-                DashboardUploadStatus(
-                    enabled=True,
-                    phase="idle",
-                    trigger=trigger,
-                    target=upload_config.remote_path,
-                    detail="等待录制结束",
+            if initial_scan:
+                initial_scan = False
+            else:
+                publish_upload_status(
+                    DashboardUploadStatus(
+                        enabled=True,
+                        phase="idle",
+                        trigger=trigger,
+                        target=upload_config.remote_path,
+                        detail="等待录制结束",
+                    )
                 )
-            )
-            while not upload_shutdown_requested() and upload_generation_active(generation):
-                if upload_recording_finished_event.wait(1):
-                    upload_recording_finished_event.clear()
-                    break
+                while not upload_shutdown_requested() and upload_generation_active(generation):
+                    if upload_recording_finished_event.wait(1):
+                        upload_recording_finished_event.clear()
+                        break
+                if not debounce_recording_finished_upload_trigger(generation):
+                    return
             if upload_shutdown_requested() or not upload_generation_active(generation):
                 return
         elif upload_config.trigger_mode != "间隔":
@@ -616,20 +664,27 @@ def upload_worker(upload_config: UploadConfig, recording_save_path: str, generat
         if not upload_generation_active(generation):
             return
         retry_limit = upload_config.app_retries + 1
-        publish_upload_status(
-            DashboardUploadStatus(
-                enabled=True,
-                phase="running",
-                trigger=trigger,
-                target=upload_config.remote_path,
-                detail=f"正在上传 {source_path}",
-                retry_limit=retry_limit,
+        if not acquire_upload_run_slot(generation, trigger, upload_config.remote_path):
+            return
+        try:
+            if upload_shutdown_requested() or not upload_generation_active(generation):
+                return
+            publish_upload_status(
+                DashboardUploadStatus(
+                    enabled=True,
+                    phase="running",
+                    trigger=trigger,
+                    target=upload_config.remote_path,
+                    detail=f"正在上传 {source_path}",
+                    retry_limit=retry_limit,
+                )
             )
-        )
-        dashboard_store.add_event("system", "upload_started", f"开始上传 {source_path}")
-        upload_snapshot_before = snapshot_upload_files(source_path)
-        result = upload_service.run_once(source_path)
-        upload_snapshot_after = snapshot_upload_files(source_path)
+            dashboard_store.add_event("system", "upload_started", f"开始上传 {source_path}")
+            upload_snapshot_before = snapshot_upload_files(source_path)
+            result = upload_service.run_once(source_path)
+            upload_snapshot_after = snapshot_upload_files(source_path)
+        finally:
+            upload_run_lock.release()
         if not upload_generation_active(generation):
             return
         file_records = build_upload_file_records(upload_snapshot_before, upload_snapshot_after, result)
@@ -671,8 +726,14 @@ def upload_worker(upload_config: UploadConfig, recording_save_path: str, generat
                 time.sleep(1)
 
 
-def start_upload_service(upload_config: UploadConfig, recording_save_path: str) -> None:
+def start_upload_service(
+    upload_config: UploadConfig,
+    recording_save_path: str,
+    exclude_patterns: tuple[str, ...] = (),
+) -> None:
     global upload_service_generation, upload_service_signature
+    if exclude_patterns:
+        upload_config = replace(upload_config, exclude_patterns=exclude_patterns)
     refresh_upload_dashboard_status(upload_config)
     signature = upload_config_signature(upload_config, recording_save_path)
     if not upload_config.enabled:
@@ -686,11 +747,14 @@ def start_upload_service(upload_config: UploadConfig, recording_save_path: str) 
             return
         upload_service_generation += 1
         upload_service_signature = signature
+        initial_scan = upload_config.trigger_mode == "录制结束"
         threading.Thread(
             target=upload_worker,
-            args=(upload_config, recording_save_path, upload_service_generation),
+            args=(upload_config, recording_save_path, upload_service_generation, initial_scan),
             daemon=True,
         ).start()
+    if initial_scan:
+        dashboard_store.add_event("system", "startup_recovery_upload", "启动后扫描可上传文件")
 
 
 def refresh_dashboard_configuration() -> None:
@@ -1977,13 +2041,56 @@ def start_record(
                                         startupinfo=get_startup_info(os_type),
                                     )
 
+                                early_segment_queue = None
+                                early_segment_finalizer_ref = {"finalizer": None}
+                                if split_video_by_time and save_format is SaveFormat.TS and converts_to_mp4:
+                                    early_segment_queue = SegmentConversionQueue(
+                                        converter=convert_recording_file,
+                                        transcode_h264=converts_to_h264,
+                                        on_success=lambda _path: notify_recording_finished_upload(),
+                                    )
+
                                 pipeline = RecordingPipeline(
                                     postprocessor=PostProcessor(
                                         converter=convert_recording_file,
                                         script_runner=run_record_script,
+                                        skip_files=(
+                                            early_segment_queue.processed_files
+                                            if early_segment_queue is not None
+                                            else None
+                                        ),
                                     ),
                                     direct_downloader=download_direct,
                                 )
+
+                                def close_early_segment_queue(segment_queue=early_segment_queue):
+                                    if segment_queue is not None:
+                                        segment_queue.close()
+
+                                def scan_early_segment_finalizer(finalizer_ref=early_segment_finalizer_ref):
+                                    finalizer = finalizer_ref["finalizer"]
+                                    if finalizer is not None:
+                                        finalizer.scan()
+
+                                def bind_early_segment_finalizer(
+                                        plan,
+                                        segment_queue=early_segment_queue,
+                                        finalizer_ref=early_segment_finalizer_ref,
+                                        room_url=record_url,
+                                ):
+                                    if segment_queue is None:
+                                        return
+                                    finalizer_ref["finalizer"] = SegmentFinalizer(
+                                        plan,
+                                        submit=segment_queue.submit,
+                                    )
+                                    dashboard_store.add_event(
+                                        room_url,
+                                        "conversion_started",
+                                        "分段完成后自动转 MP4",
+                                        correlation_id=f"conversion-watch:{room_url}:{plan.output_path}",
+                                    )
+
                                 result = pipeline.run(
                                     request,
                                     should_comment_stop=lambda record_url=record_url: (
@@ -1994,7 +2101,12 @@ def start_record(
                                         exit_recording
                                         or bool(stop_token and stop_token.shutdown_requested)
                                     ),
-                                    on_start=on_pipeline_start,
+                                    on_start=lambda plan: (
+                                        on_pipeline_start(plan),
+                                        bind_early_segment_finalizer(plan),
+                                    ),
+                                    on_tick=scan_early_segment_finalizer,
+                                    before_postprocess=close_early_segment_queue,
                                     on_finish=lambda record_name=record_name, record_url=record_url: (
                                         recording.discard(record_name),
                                         dashboard_store.mark_recording_finished(record_url),
@@ -2420,7 +2532,16 @@ def main() -> int:
         cookie_cfg = app_config.cookies
 
         video_save_path = recording_cfg.save_path
-        start_upload_service(app_config.upload, recording_cfg.save_path)
+        upload_exclude_patterns = (
+            ("*.converting.mp4", "*.ts")
+            if recording_cfg.converts_to_mp4 and recording_cfg.save_type is SaveType.TS
+            else ()
+        )
+        start_upload_service(
+            app_config.upload,
+            recording_cfg.save_path,
+            exclude_patterns=upload_exclude_patterns,
+        )
         folder_by_author = recording_cfg.folder_by_author
         folder_by_time = recording_cfg.folder_by_time
         folder_by_title = recording_cfg.folder_by_title

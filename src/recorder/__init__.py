@@ -13,6 +13,7 @@ from .pathing import PathBuilder, sanitize_name
 from .pipeline import RecordingPipeline
 from .postprocess import PostProcessor
 from .process import RecorderProcess, sanitize_output_tail
+from .segments import SegmentConversionQueue, SegmentFinalizer
 
 __all__ = [
     "ConversionError",
@@ -31,5 +32,7 @@ __all__ = [
     "sanitize_output_tail",
     "RecordingPipeline",
     "SaveFormat",
+    "SegmentConversionQueue",
+    "SegmentFinalizer",
     "sanitize_name",
 ]

@@ -42,6 +42,20 @@ def test_natural_zero_exit_is_completed():
     assert result.return_code == 0
 
 
+def test_running_process_invokes_tick_callback_between_polls():
+    ticks = []
+
+    result = make_runner(FakeProcess([None, 0])).run(
+        ["ffmpeg"],
+        should_comment_stop=lambda: False,
+        should_exit=lambda: False,
+        on_tick=lambda: ticks.append("tick"),
+    )
+
+    assert result.reason is EndReason.COMPLETED
+    assert ticks == ["tick"]
+
+
 def test_nonzero_exit_is_failed_and_keeps_return_code():
     result = make_runner(FakeProcess([7])).run(["ffmpeg"], should_comment_stop=lambda: False, should_exit=lambda: False)
     assert result.reason is EndReason.FAILED

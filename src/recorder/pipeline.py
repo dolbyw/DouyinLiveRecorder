@@ -36,6 +36,8 @@ class RecordingPipeline:
         should_exit: Callable[[], bool],
         on_start: Callable[[Any], None] | None = None,
         on_finish: Callable[[], None] | None = None,
+        on_tick: Callable[[], None] | None = None,
+        before_postprocess: Callable[[], None] | None = None,
         startupinfo: Any = None,
     ) -> PipelineResult:
         try:
@@ -53,8 +55,11 @@ class RecordingPipeline:
                 should_comment_stop=should_comment_stop,
                 should_exit=should_exit,
                 on_started=(lambda _process: on_start(plan)) if on_start else None,
+                on_tick=on_tick,
                 startupinfo=startupinfo,
             )
+            if before_postprocess is not None:
+                before_postprocess()
             postprocess = self._postprocessor.run(request, plan, process)
             return PipelineResult(plan, process, postprocess)
         finally:

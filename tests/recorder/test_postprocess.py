@@ -105,3 +105,22 @@ def test_segment_conversion_receives_one_based_file_position(tmp_path):
     )
 
     assert calls == [(first, 1, 2), (second, 2, 2)]
+
+
+def test_postprocessor_skips_files_already_handled_during_recording(tmp_path):
+    first, second = tmp_path / "a_000.ts", tmp_path / "a_001.ts"
+    first.write_bytes(b"x")
+    second.write_bytes(b"x")
+    calls = []
+    plan = OutputPlan(tmp_path / "a_%03d.ts", tmp_path / "a_*.ts", SaveFormat.TS, True)
+
+    PostProcessor(
+        converter=lambda path, _h264, index, total: calls.append((path, index, total)),
+        skip_files=lambda: {first},
+    ).run(
+        make_request(tmp_path, convert_to_mp4=True),
+        plan,
+        ProcessResult(EndReason.COMPLETED, 0),
+    )
+
+    assert calls == [(second, 1, 1)]

@@ -207,6 +207,45 @@ def test_rc_upload_service_reports_partial_success_when_files_remain_after_job_s
     assert "仍有 1 个文件待上传" in result.message
 
 
+def test_rc_upload_service_ignores_excluded_files_when_deciding_success(tmp_path):
+    source = tmp_path / "downloads"
+    source.mkdir()
+    uploaded = source / "room.mp4"
+    protected = source / "room.ts"
+    uploaded.write_bytes(b"x")
+    protected.write_bytes(b"raw")
+    client = FakeRcClient([{"finished": True, "success": True, "output": {"transferred": "1 file"}}])
+    client.delete_on_success_path = uploaded
+    service = RcloneRcUploadService(
+        UploadConfig(enabled=True, exclude_patterns=("*.ts",)),
+        daemon=FakeDaemon(),
+        client=client,
+    )
+
+    result = service.run_once(source)
+
+    assert result.phase == "success"
+    assert protected.exists()
+
+
+def test_rc_upload_service_skips_when_only_excluded_files_exist(tmp_path):
+    source = tmp_path / "downloads"
+    source.mkdir()
+    (source / "room.ts").write_bytes(b"raw")
+    client = FakeRcClient([])
+    service = RcloneRcUploadService(
+        UploadConfig(enabled=True, app_retries=0, exclude_patterns=("*.ts",)),
+        daemon=FakeDaemon(),
+        client=client,
+        sleeper=lambda _seconds: None,
+    )
+
+    result = service.run_once(source)
+
+    assert result.phase == "skipped"
+    assert client.started == []
+
+
 def test_rc_upload_service_reports_failed_async_job(tmp_path):
     source = tmp_path / "downloads"
     source.mkdir()

@@ -40,6 +40,20 @@ def test_build_rclone_move_command_uses_safe_webdav_defaults(tmp_path):
     ]
 
 
+def test_build_rclone_move_command_excludes_protected_recording_patterns(tmp_path):
+    source = tmp_path / "downloads"
+    config = UploadConfig(enabled=True, exclude_patterns=("*.converting.mp4", "*.ts"))
+
+    command = build_rclone_move_command(config, source)
+
+    assert command[-4:] == [
+        "--exclude",
+        "*.converting.mp4",
+        "--exclude",
+        "*.ts",
+    ]
+
+
 def test_recording_finished_upload_runs_without_min_age_filter():
     config = UploadConfig(enabled=True, trigger_mode="录制结束", min_age="1h")
 
@@ -210,6 +224,45 @@ def test_run_once_reports_partial_success_when_files_remain_after_move(tmp_path)
     assert result.files_remaining == 1
     assert result.bytes_remaining == 5
     assert "仍有 1 个文件待上传" in result.message
+
+
+def test_run_once_ignores_excluded_files_when_deciding_success(tmp_path):
+    source = tmp_path / "downloads"
+    source.mkdir()
+    uploaded = source / "room.mp4"
+    protected = source / "room.ts"
+    uploaded.write_bytes(b"x")
+    protected.write_bytes(b"raw")
+
+    def runner(_command):
+        uploaded.unlink()
+        return RcloneResult(exit_code=0, stdout="Transferred: 1 file", stderr="")
+
+    service = RcloneUploadService(UploadConfig(enabled=True, exclude_patterns=("*.ts",)), runner=runner)
+
+    result = service.run_once(source)
+
+    assert result.phase == "success"
+    assert result.files_remaining == 0
+    assert protected.exists()
+
+
+def test_run_once_skips_when_only_excluded_files_exist(tmp_path):
+    source = tmp_path / "downloads"
+    source.mkdir()
+    (source / "room.ts").write_bytes(b"raw")
+    calls = []
+
+    service = RcloneUploadService(
+        UploadConfig(enabled=True, app_retries=0, exclude_patterns=("*.ts",)),
+        runner=lambda command: calls.append(command) or RcloneResult(exit_code=1),
+        sleeper=lambda _seconds: None,
+    )
+
+    result = service.run_once(source)
+
+    assert result.phase == "skipped"
+    assert calls == []
 
 
 def test_run_once_prepares_webdav_remote_before_upload(tmp_path):

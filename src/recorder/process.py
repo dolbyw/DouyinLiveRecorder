@@ -47,6 +47,7 @@ class RecorderProcess:
         should_comment_stop: Callable[[], bool],
         should_exit: Callable[[], bool],
         on_started: Callable[[Any], None] | None = None,
+        on_tick: Callable[[], None] | None = None,
         startupinfo: Any = None,
     ) -> ProcessResult:
         kwargs = {"stdin": subprocess.PIPE, "stdout": subprocess.PIPE, "stderr": subprocess.STDOUT}
@@ -76,6 +77,11 @@ class RecorderProcess:
                 return self._stop(process, EndReason.COMMENT_STOPPED, output_reader, output_tail)
             if should_exit():
                 return self._stop(process, EndReason.EXIT_STOPPED, output_reader, output_tail)
+            if on_tick is not None:
+                try:
+                    on_tick()
+                except Exception:
+                    pass
             self._sleep(1)
 
     def _stop(

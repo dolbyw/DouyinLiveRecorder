@@ -108,6 +108,15 @@ def test_build_sync_move_payload_maps_upload_config_to_rc_parameters(tmp_path):
     }
 
 
+def test_build_sync_move_payload_excludes_protected_recording_patterns(tmp_path):
+    source = tmp_path / "downloads"
+    config = UploadConfig(enabled=True, exclude_patterns=("*.converting.mp4", "*.ts"))
+
+    payload = build_sync_move_payload(config, source)
+
+    assert payload["_filter"]["ExcludeRule"] == ["*.converting.mp4", "*.ts"]
+
+
 def test_rc_client_posts_json_to_endpoint_and_returns_response():
     requests = []
 

@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from fnmatch import fnmatch
 from pathlib import Path
 
 from src.models import UploadConfig
@@ -152,6 +153,8 @@ def build_rclone_move_command(
         command.append("--delete-empty-src-dirs")
     if config.dry_run:
         command.append("--dry-run")
+    for pattern in config.exclude_patterns:
+        command.extend(["--exclude", pattern])
     return command
 
 
@@ -199,16 +202,33 @@ def build_rclone_lsjson_command(
     ]
 
 
-def _source_has_files(source_path: Path) -> bool:
-    if not source_path.exists() or not source_path.is_dir():
+def _is_excluded_upload_path(relative_path: Path, patterns: tuple[str, ...]) -> bool:
+    if not patterns:
         return False
-    return any(candidate.is_file() for candidate in source_path.rglob("*"))
+    normalized = relative_path.as_posix()
+    return any(fnmatch(normalized, pattern) or fnmatch(relative_path.name, pattern) for pattern in patterns)
 
 
-def _source_file_stats(source_path: Path) -> tuple[int, int]:
+def _source_files(source_path: Path, exclude_patterns: tuple[str, ...] = ()) -> list[Path]:
     if not source_path.exists() or not source_path.is_dir():
-        return 0, 0
-    files = [candidate for candidate in source_path.rglob("*") if candidate.is_file()]
+        return []
+    files: list[Path] = []
+    for candidate in source_path.rglob("*"):
+        if not candidate.is_file():
+            continue
+        relative_path = candidate.relative_to(source_path)
+        if _is_excluded_upload_path(relative_path, exclude_patterns):
+            continue
+        files.append(candidate)
+    return files
+
+
+def _source_has_files(source_path: Path, exclude_patterns: tuple[str, ...] = ()) -> bool:
+    return bool(_source_files(source_path, exclude_patterns))
+
+
+def _source_file_stats(source_path: Path, exclude_patterns: tuple[str, ...] = ()) -> tuple[int, int]:
+    files = _source_files(source_path, exclude_patterns)
     return len(files), sum(candidate.stat().st_size for candidate in files)
 
 
@@ -221,8 +241,9 @@ def upload_result_from_success(
     message: str = "upload completed",
     files_total: int = 0,
     bytes_total: int = 0,
+    exclude_patterns: tuple[str, ...] = (),
 ) -> UploadRunResult:
-    files_remaining, bytes_remaining = _source_file_stats(source_path)
+    files_remaining, bytes_remaining = _source_file_stats(source_path, exclude_patterns)
     if files_remaining:
         return UploadRunResult(
             phase="partial",
@@ -269,7 +290,7 @@ def accept_failed_upload_if_remote_verified(
         return False
 
     source = Path(source_path)
-    local_files = [candidate for candidate in source.rglob("*") if candidate.is_file()]
+    local_files = _source_files(source, config.exclude_patterns)
     if not local_files:
         return False
 
@@ -335,7 +356,7 @@ class RcloneUploadService:
 
     def run_once(self, source_path: str | Path) -> UploadRunResult:
         source = Path(source_path)
-        files_total, bytes_total = _source_file_stats(source)
+        files_total, bytes_total = _source_file_stats(source, self._config.exclude_patterns)
         if files_total == 0:
             result = UploadRunResult(
                 phase="skipped",
@@ -392,6 +413,7 @@ class RcloneUploadService:
                     message="upload completed",
                     files_total=files_total,
                     bytes_total=bytes_total,
+                    exclude_patterns=self._config.exclude_patterns,
                 )
                 self.status = UploadStatus(
                     phase=result.phase,

@@ -36,6 +36,11 @@ def build_rcd_command(config: UploadConfig, *, app_root: str | Path | None = Non
 
 
 def build_sync_move_payload(config: UploadConfig, source_path: str | Path) -> dict[str, Any]:
+    filter_config: dict[str, Any] = {
+        "MinAge": config.min_age,
+    }
+    if config.exclude_patterns:
+        filter_config["ExcludeRule"] = list(config.exclude_patterns)
     return {
         "srcFs": str(Path(source_path)),
         "dstFs": config.remote_path,
@@ -48,9 +53,7 @@ def build_sync_move_payload(config: UploadConfig, source_path: str | Path) -> di
             "Retries": config.rclone_retries,
             "DryRun": config.dry_run,
         },
-        "_filter": {
-            "MinAge": config.min_age,
-        },
+        "_filter": filter_config,
     }
 
 

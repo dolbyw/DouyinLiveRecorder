@@ -14,6 +14,7 @@ from .service import (
     StopRequested,
     UploadRunResult,
     UploadStatus,
+    _source_has_files,
     accept_failed_upload_if_remote_verified,
     current_app_root,
     upload_result_from_stop_request,
@@ -31,12 +32,6 @@ class RcloneRcUploadProgress:
 
 
 ProgressCallback = Callable[[RcloneRcUploadProgress], None]
-
-
-def _source_has_files(source_path: Path) -> bool:
-    if not source_path.exists() or not source_path.is_dir():
-        return False
-    return any(candidate.is_file() for candidate in source_path.rglob("*"))
 
 
 class RcloneRcUploadService:
@@ -71,7 +66,7 @@ class RcloneRcUploadService:
 
     def run_once(self, source_path: str | Path) -> UploadRunResult:
         source = Path(source_path)
-        if not _source_has_files(source):
+        if not _source_has_files(source, self.config.exclude_patterns):
             result = UploadRunResult(
                 phase="skipped",
                 attempts=0,
@@ -129,6 +124,7 @@ class RcloneRcUploadService:
                     stdout=result.stdout,
                     stderr=result.stderr,
                     message=result.message,
+                    exclude_patterns=self.config.exclude_patterns,
                 )
                 self.status = UploadStatus(
                     phase=result.phase,
@@ -160,7 +156,7 @@ class RcloneRcUploadService:
                     stdout=result.stdout,
                 )
                 return result
-            if not _source_has_files(source):
+            if not _source_has_files(source, self.config.exclude_patterns):
                 result = UploadRunResult(
                     phase="success",
                     attempts=attempt,

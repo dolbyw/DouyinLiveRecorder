@@ -123,6 +123,7 @@ class UploadConfig:
     webdav_vendor: str = "other"
     delete_empty_dirs: bool = True
     dry_run: bool = False
+    exclude_patterns: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(slots=True)

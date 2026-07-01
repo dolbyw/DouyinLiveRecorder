@@ -11,9 +11,11 @@ class PostProcessor:
         self,
         converter: Callable[[Path, bool, int, int], None] | None = None,
         script_runner: Callable[[str], None] | None = None,
+        skip_files: Callable[[], set[Path]] | None = None,
     ) -> None:
         self._converter = converter
         self._script_runner = script_runner
+        self._skip_files = skip_files or set
 
     @staticmethod
     def files_for(plan: OutputPlan) -> tuple[Path, ...]:
@@ -30,7 +32,8 @@ class PostProcessor:
         if not process_result.reason.is_success:
             return PostprocessResult()
 
-        files = self.files_for(plan)
+        skip_files = {Path(path) for path in self._skip_files()}
+        files = tuple(path for path in self.files_for(plan) if path not in skip_files)
         errors: list[BaseException] = []
         if request.convert_to_mp4 and plan.save_format is SaveFormat.TS and self._converter:
             for index, path in enumerate(files, start=1):

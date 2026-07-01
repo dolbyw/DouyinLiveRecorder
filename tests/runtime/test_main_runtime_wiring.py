@@ -213,6 +213,19 @@ def test_main_wires_atomic_converter_and_progress_presenter():
     assert "converts_mp4(" not in start_source
 
 
+def test_main_wires_segment_finalizer_for_split_ts_conversion_uploads():
+    source = MAIN_PATH.read_text(encoding="utf-8")
+    start_source = start_record_source()
+
+    assert "SegmentFinalizer" in source
+    assert 'finalizer_ref["finalizer"]' in start_source
+    assert "finalizer.scan()" in start_source
+    assert "on_tick=scan_early_segment_finalizer" in start_source
+    assert "notify_recording_finished_upload()" in start_source
+    assert '"*.converting.mp4", "*.ts"' in source
+    assert "exclude_patterns=upload_exclude_patterns" in source
+
+
 def test_main_publishes_real_probe_and_recording_detail_data():
     source = MAIN_PATH.read_text(encoding="utf-8")
     start_source = start_record_source()
@@ -305,7 +318,9 @@ def test_main_wires_auto_upload_config_status_and_service():
     assert "progress_callback=publish_upload_progress" in source
     assert "stop_requested=upload_shutdown_requested" in source
     assert "target=upload_worker" in source
-    assert "start_upload_service(app_config.upload, recording_cfg.save_path)" in source
+    assert "start_upload_service(" in source
+    assert "app_config.upload," in source
+    assert "recording_cfg.save_path," in source
     assert "def publish_upload_progress" in source
     assert "def format_upload_progress" in source
     assert "def format_upload_bytes" in source
@@ -320,7 +335,36 @@ def test_main_upload_service_supports_config_hot_reload_generations():
     assert "def upload_generation_active" in source
     assert "upload_generation_active(generation)" in source
     assert "upload_service_generation += 1" in source
-    assert "args=(upload_config, recording_save_path, upload_service_generation)" in source
+    assert "args=(upload_config, recording_save_path, upload_service_generation" in source
+
+
+def test_auto_upload_debounces_recording_finished_events_and_serializes_runs():
+    source = MAIN_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "upload_worker")
+    worker_source = ast.get_source_segment(source, function) or ""
+
+    assert "UPLOAD_TRIGGER_DEBOUNCE_SECONDS" in source
+    assert "upload_run_lock = threading.Lock()" in source
+    assert "debounce_recording_finished_upload_trigger(generation)" in worker_source
+    assert "acquire_upload_run_slot(generation, trigger, upload_config.remote_path)" in worker_source
+    assert "upload_run_lock.acquire(timeout=1)" in source
+    assert "upload_run_lock.release()" in worker_source
+    assert "upload_service.run_once(source_path)" in worker_source
+
+
+def test_auto_upload_runs_startup_recovery_scan_for_recording_finished_mode():
+    source = MAIN_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "start_upload_service"
+    )
+    start_source = ast.get_source_segment(source, function) or ""
+
+    assert "initial_scan" in source
+    assert 'upload_config.trigger_mode == "录制结束"' in start_source
+    assert "args=(upload_config, recording_save_path, upload_service_generation, initial_scan)" in start_source
+    assert "startup_recovery_upload" in start_source
 
 
 def test_auto_upload_can_be_triggered_after_successful_recording_finishes():
@@ -336,7 +380,7 @@ def test_auto_upload_can_be_triggered_after_successful_recording_finishes():
     assert "upload_config_for_run = prepare_upload_config_for_run(upload_config)" in source
     assert "notify_recording_finished_upload()" in start_source
     success_check_index = start_source.index("result.process.reason.is_success")
-    upload_notify_index = start_source.index("notify_recording_finished_upload()")
+    upload_notify_index = start_source.rindex("notify_recording_finished_upload()")
     assert success_check_index < upload_notify_index
 
 
