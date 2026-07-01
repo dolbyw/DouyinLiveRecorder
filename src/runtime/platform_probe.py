@@ -62,7 +62,9 @@ class RegisteredPlatformProbe:
         )
         if dispatch.error is not None:
             label = dispatch.display_name or dispatch.platform_name or room.url
-            raise PlatformProbeError(f"platform probe failed: {label}") from dispatch.error
+            error_type = type(dispatch.error).__name__
+            message = f"platform probe failed: {label}: {error_type}: {dispatch.error}"
+            raise PlatformProbeError(message) from dispatch.error
         if not dispatch.handled:
             raise LegacyPlatformRequired(f"no async adapter handled room: {room.url}")
 

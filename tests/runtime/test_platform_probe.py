@@ -69,7 +69,7 @@ async def test_adapter_failure_is_preserved_as_platform_probe_error():
     adapter = FakeAdapter(error=RuntimeError("network failed"))
     probe = RegisteredPlatformProbe(PlatformRegistry([adapter]), lambda _room: PlatformProbeSettings())
 
-    with pytest.raises(PlatformProbeError, match="Fake Live") as captured:
+    with pytest.raises(PlatformProbeError, match="Fake Live.*network failed") as captured:
         await probe(RoomSpec("https://fake.example/1", QualityLevel.ORIGIN))
 
     assert isinstance(captured.value.__cause__, RuntimeError)

@@ -8,7 +8,7 @@
 [![Latest Release](https://img.shields.io/github/v/release/ihmily/DouyinLiveRecorder)](https://github.com/ihmily/DouyinLiveRecorder/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/ihmily/DouyinLiveRecorder/total)](https://github.com/ihmily/DouyinLiveRecorder/releases/latest)
 
-DouyinLiveRecorder 是一款可循环值守的直播录制工具，基于 FFmpeg 实现多平台直播源录制，支持多人监控、自动转码、运行状态仪表盘、直播状态推送，以及录制完成后的自动上传。
+DouyinLiveRecorder 是一款可循环值守的直播录制工具，基于 FFmpeg 实现多平台直播源录制，支持多人监控、自动转码、运行状态仪表盘、直播状态推送，以及录制完成后的自动上传。主界面按 `U` 可查看上传详情，最近记录会按主播和文件显示上传完成或保留本地等待重传；完整上传记录会写入 `logs/upload_records.jsonl`。
 
 </div>
 
@@ -117,7 +117,7 @@ DouyinLiveRecorder 是一款可循环值守的直播录制工具，基于 FFmpeg
 
 - 如果要长时间循环监测直播，建议把检测间隔设置得稍长一些，避免请求过于频繁导致平台限制访问。
 
-- 要停止所有录制，Windows 平台可以运行 `StopRecording.vbs`，也可以在控制台中使用 `Ctrl+C` 中断程序。若只想停止某个直播间，请在 `URL_config.ini` 中把对应地址前加上 `#`，程序会正常结束该直播间录制并保存已有文件。
+- 要停止所有录制，Windows 平台可以运行 `StopRecording.vbs`，也可以在控制台中按一次 `Ctrl+C` 停止录制并完成转码；如果启用了自动上传，上传会继续运行，再按一次 `Ctrl+C` 才会停止上传并退出。若只想停止某个直播间，请在 `URL_config.ini` 中把对应地址前加上 `#`，程序会正常结束该直播间录制并保存已有文件。
 - 程序启动后会显示终端仪表盘，主界面包含直播间状态、录制时长、磁盘占用、上传状态和最近运行动态。按 `R` 可切换直播间列表显示数量，按 `U` 可查看或收起上传详情。
 - 欢迎给项目点 Star，也欢迎提交 Pull Request。
 

@@ -75,6 +75,9 @@ class DashboardUploadRecord:
     bytes_total: int = 0
     files_remaining: int = 0
     bytes_remaining: int = 0
+    streamer: str = ""
+    file_name: str = ""
+    relative_path: str = ""
 
 
 @dataclass(frozen=True, slots=True)

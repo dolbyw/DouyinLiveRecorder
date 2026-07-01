@@ -146,13 +146,24 @@ def test_signal_handler_requests_runtime_shutdown_before_exit():
     assert "signal.signal(signal.SIGTERM, signal_handler)" in source
     assert "dashboard_store.set_phase(AppDisplayPhase.STOPPING)" in handler_source
     assert "dashboard_store.set_phase(AppDisplayPhase.COMPLETE)" in handler_source
-    assert "wait_for_exit_key()" in handler_source
+    assert "request_upload_shutdown()" in handler_source
+    assert "wait_for_exit_key()" not in handler_source
+    assert "sys.exit(0)" not in handler_source
     assert "dashboard_refresh_event.set()" in handler_source
     assert handler_source.index("dashboard_store.set_phase(AppDisplayPhase.COMPLETE)") < handler_source.index(
         "dashboard_refresh_event.set()"
     )
-    assert handler_source.index("dashboard_refresh_event.set()") < handler_source.index("wait_for_exit_key()")
-    assert handler_source.index("wait_for_exit_key()") < handler_source.index("sys.exit(0)")
+
+
+def test_upload_worker_survives_recording_shutdown_until_upload_shutdown_is_requested():
+    source = MAIN_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "upload_worker")
+    worker_source = ast.get_source_segment(source, function) or ""
+
+    assert "upload_shutdown_requested()" in worker_source
+    assert "while not exit_recording and upload_generation_active(generation):" not in worker_source
+    assert "upload_recording_finished_event.wait(1)" in worker_source
 
 
 def test_dashboard_refresh_uses_wake_event_instead_of_fixed_sleep():
@@ -289,7 +300,10 @@ def test_main_wires_auto_upload_config_status_and_service():
     assert "dashboard_store.set_upload(" in source
     assert "DashboardUploadStatus(" in source
     assert "resolve_upload_source(upload_config, recording_save_path, default_path)" in source
-    assert "create_upload_service(upload_config_for_run, progress_callback=publish_upload_progress)" in source
+    assert "create_upload_service(" in source
+    assert "upload_config_for_run," in source
+    assert "progress_callback=publish_upload_progress" in source
+    assert "stop_requested=upload_shutdown_requested" in source
     assert "target=upload_worker" in source
     assert "start_upload_service(app_config.upload, recording_cfg.save_path)" in source
     assert "def publish_upload_progress" in source
@@ -324,6 +338,30 @@ def test_auto_upload_can_be_triggered_after_successful_recording_finishes():
     success_check_index = start_source.index("result.process.reason.is_success")
     upload_notify_index = start_source.index("notify_recording_finished_upload()")
     assert success_check_index < upload_notify_index
+
+
+def test_upload_worker_records_per_streamer_upload_results():
+    source = MAIN_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "upload_worker")
+    worker_source = ast.get_source_segment(source, function) or ""
+
+    assert "upload_snapshot_before = snapshot_upload_files(source_path)" in worker_source
+    assert "upload_snapshot_after = snapshot_upload_files(source_path)" in worker_source
+    assert "file_records = build_upload_file_records(" in worker_source
+    assert "write_upload_file_records(file_records, next_status)" in worker_source
+    assert "append_upload_record(next_status, result, file_records)" in worker_source
+
+
+def test_upload_file_record_helpers_infer_streamer_without_database():
+    source = MAIN_PATH.read_text(encoding="utf-8")
+
+    assert "def snapshot_upload_files" in source
+    assert "def infer_upload_streamer" in source
+    assert "def build_upload_file_records" in source
+    assert "def write_upload_file_records" in source
+    assert "upload_records.jsonl" in source
+    assert "sqlite" not in source.lower()
 
 
 def test_short_recording_completion_logs_raw_ffmpeg_tail():

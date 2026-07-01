@@ -79,7 +79,6 @@ from src.runtime import (
     ThreadedRuntimeHost,
     calculate_legacy_first_start_spacing,
     parse_room_config_lines,
-    wait_for_exit_key,
 )
 from src.uploader import (
     RcloneRcUploadProgress,
@@ -144,6 +143,7 @@ text_encoding = 'utf-8-sig'
 rstr = r"[\/\\\:\*\？?\"\<\>\|&#.。,， ~！· ]"
 default_path = f'{script_path}/downloads'
 os.makedirs(default_path, exist_ok=True)
+upload_record_log_file = Path(script_path) / "logs" / "upload_records.jsonl"
 file_update_lock = threading.Lock()
 conversion_progress_lock = threading.Lock()
 dashboard_refresh_event = threading.Event()
@@ -156,6 +156,7 @@ recording_size_cache = RecordingDirectorySizeCache()
 upload_service_lock = threading.Lock()
 upload_status_lock = threading.Lock()
 upload_recording_finished_event = threading.Event()
+upload_shutdown_event = threading.Event()
 upload_dashboard_status = DashboardUploadStatus()
 upload_service_generation = 0
 upload_service_signature: tuple | None = None
@@ -205,6 +206,11 @@ def _debug_report(hypothesis_id: str, location: str, msg: str, data: dict | None
 
 def signal_handler(_signal, _frame):
     global exit_recording
+    if shutdown_control.requested:
+        request_upload_shutdown()
+        dashboard_store.set_phase(AppDisplayPhase.COMPLETE)
+        dashboard_refresh_event.set()
+        return
     if not shutdown_control.request():
         return
     dashboard_store.set_phase(AppDisplayPhase.STOPPING)
@@ -225,8 +231,6 @@ def signal_handler(_signal, _frame):
     )
     dashboard_store.set_phase(AppDisplayPhase.COMPLETE)
     dashboard_refresh_event.set()
-    wait_for_exit_key()
-    sys.exit(0)
 
 
 def make_conversion_progress_callback(index: int, total: int, room_id: str):
@@ -306,7 +310,109 @@ def publish_upload_status(upload_status: DashboardUploadStatus) -> None:
     dashboard_refresh_event.set()
 
 
-def append_upload_record(upload_status: DashboardUploadStatus, result) -> DashboardUploadStatus:
+def infer_upload_streamer(relative_path: Path) -> str:
+    if len(relative_path.parts) > 1:
+        return relative_path.parts[0].strip() or "未知主播"
+    stem = relative_path.stem.strip()
+    for delimiter in ("_", "-", " ", "（", "("):
+        if delimiter in stem:
+            name = stem.split(delimiter, 1)[0].strip()
+            if name:
+                return name
+    return stem or "未知主播"
+
+
+def snapshot_upload_files(source_path: str | Path) -> dict[Path, int]:
+    source = Path(source_path)
+    if not source.is_dir():
+        return {}
+    files: dict[Path, int] = {}
+    for candidate in source.rglob("*"):
+        if not candidate.is_file():
+            continue
+        try:
+            relative_path = candidate.relative_to(source)
+            if any(part.startswith(".upload") for part in relative_path.parts):
+                continue
+            files[relative_path] = candidate.stat().st_size
+        except OSError:
+            continue
+    return files
+
+
+def build_upload_file_records(
+    before: dict[Path, int],
+    after: dict[Path, int],
+    result,
+) -> tuple[DashboardUploadRecord, ...]:
+    timestamp = datetime.datetime.now().astimezone()
+    records: list[DashboardUploadRecord] = []
+    uploaded_paths = sorted(set(before) - set(after), key=lambda path: path.as_posix())
+    for relative_path in uploaded_paths[:20]:
+        records.append(
+            DashboardUploadRecord(
+                phase="success",
+                message="上传完成",
+                at=timestamp,
+                attempts=result.attempts,
+                files_total=1,
+                bytes_total=before.get(relative_path, 0),
+                streamer=infer_upload_streamer(relative_path),
+                file_name=relative_path.name,
+                relative_path=relative_path.as_posix(),
+            )
+        )
+    if result.phase in {"partial", "failed", "skipped"} and len(records) < 20:
+        remaining_paths = sorted(set(before) & set(after), key=lambda path: path.as_posix())
+        for relative_path in remaining_paths[: 20 - len(records)]:
+            records.append(
+                DashboardUploadRecord(
+                    phase=result.phase,
+                    message="保留本地，等待下次上传",
+                    at=timestamp,
+                    attempts=result.attempts,
+                    files_total=1,
+                    bytes_total=after.get(relative_path, before.get(relative_path, 0)),
+                    streamer=infer_upload_streamer(relative_path),
+                    file_name=relative_path.name,
+                    relative_path=relative_path.as_posix(),
+                )
+            )
+    return tuple(records)
+
+
+def write_upload_file_records(
+    records: tuple[DashboardUploadRecord, ...],
+    upload_status: DashboardUploadStatus,
+) -> None:
+    if not records:
+        return
+    try:
+        upload_record_log_file.parent.mkdir(parents=True, exist_ok=True)
+        with upload_record_log_file.open("a", encoding="utf-8") as log_file:
+            for record in records:
+                payload = {
+                    "time": record.at.isoformat(timespec="seconds"),
+                    "phase": record.phase,
+                    "streamer": record.streamer,
+                    "file_name": record.file_name,
+                    "relative_path": record.relative_path,
+                    "message": record.message,
+                    "bytes_total": record.bytes_total,
+                    "attempts": record.attempts,
+                    "trigger": upload_status.trigger,
+                    "target": upload_status.target,
+                }
+                log_file.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except OSError as err:
+        logger.warning(f"上传记录写入失败: {err}")
+
+
+def append_upload_record(
+    upload_status: DashboardUploadStatus,
+    result,
+    file_records: tuple[DashboardUploadRecord, ...] = (),
+) -> DashboardUploadStatus:
     message = result.message or result.stderr or result.stdout or "上传任务结束"
     record = DashboardUploadRecord(
         phase=result.phase,
@@ -326,7 +432,7 @@ def append_upload_record(upload_status: DashboardUploadStatus, result) -> Dashbo
         detail=upload_status.detail,
         attempts=upload_status.attempts,
         retry_limit=upload_status.retry_limit,
-        records=(record, *upload_status.records)[:10],
+        records=(record, *file_records, *upload_status.records)[:30],
     )
 
 
@@ -434,12 +540,48 @@ def notify_recording_finished_upload() -> None:
     upload_recording_finished_event.set()
 
 
+def request_upload_shutdown() -> bool:
+    if upload_shutdown_event.is_set():
+        return False
+    upload_shutdown_event.set()
+    upload_recording_finished_event.set()
+    dashboard_store.add_event(
+        "__app__",
+        "upload_stopped",
+        "自动上传停止，未完成文件保留本地，下次启动继续上传",
+    )
+    with upload_status_lock:
+        current_status = upload_dashboard_status
+    if current_status.enabled:
+        publish_upload_status(
+            DashboardUploadStatus(
+                enabled=True,
+                phase="skipped",
+                trigger=current_status.trigger,
+                target=current_status.target,
+                detail="已停止上传，未完成文件保留本地",
+                attempts=current_status.attempts,
+                retry_limit=current_status.retry_limit,
+                records=current_status.records,
+            )
+        )
+    return True
+
+
+def upload_shutdown_requested() -> bool:
+    return upload_shutdown_event.is_set()
+
+
 def upload_worker(upload_config: UploadConfig, recording_save_path: str, generation: int) -> None:
     source_path = resolve_upload_source(upload_config, recording_save_path, default_path)
     upload_config_for_run = prepare_upload_config_for_run(upload_config)
-    upload_service = create_upload_service(upload_config_for_run, progress_callback=publish_upload_progress)
+    upload_service = create_upload_service(
+        upload_config_for_run,
+        progress_callback=publish_upload_progress,
+        stop_requested=upload_shutdown_requested,
+    )
     trigger = describe_upload_trigger(upload_config)
-    while not exit_recording and upload_generation_active(generation):
+    while not upload_shutdown_requested() and upload_generation_active(generation):
         if upload_config.trigger_mode == "录制结束":
             publish_upload_status(
                 DashboardUploadStatus(
@@ -450,11 +592,11 @@ def upload_worker(upload_config: UploadConfig, recording_save_path: str, generat
                     detail="等待录制结束",
                 )
             )
-            while not exit_recording and upload_generation_active(generation):
+            while not upload_shutdown_requested() and upload_generation_active(generation):
                 if upload_recording_finished_event.wait(1):
                     upload_recording_finished_event.clear()
                     break
-            if exit_recording or not upload_generation_active(generation):
+            if upload_shutdown_requested() or not upload_generation_active(generation):
                 return
         elif upload_config.trigger_mode != "间隔":
             wait_seconds = seconds_until_next_daily_run(upload_config.daily_time)
@@ -468,7 +610,7 @@ def upload_worker(upload_config: UploadConfig, recording_save_path: str, generat
                 )
             )
             for _ in range(max(1, wait_seconds)):
-                if exit_recording or not upload_generation_active(generation):
+                if upload_shutdown_requested() or not upload_generation_active(generation):
                     return
                 time.sleep(1)
         if not upload_generation_active(generation):
@@ -485,9 +627,12 @@ def upload_worker(upload_config: UploadConfig, recording_save_path: str, generat
             )
         )
         dashboard_store.add_event("system", "upload_started", f"开始上传 {source_path}")
+        upload_snapshot_before = snapshot_upload_files(source_path)
         result = upload_service.run_once(source_path)
+        upload_snapshot_after = snapshot_upload_files(source_path)
         if not upload_generation_active(generation):
             return
+        file_records = build_upload_file_records(upload_snapshot_before, upload_snapshot_after, result)
         phase = result.phase
         event_type = {
             "success": "upload_finished",
@@ -506,7 +651,8 @@ def upload_worker(upload_config: UploadConfig, recording_save_path: str, generat
             attempts=result.attempts,
             retry_limit=retry_limit,
         )
-        publish_upload_status(append_upload_record(next_status, result))
+        write_upload_file_records(file_records, next_status)
+        publish_upload_status(append_upload_record(next_status, result, file_records))
         if phase == "failed":
             dashboard_store.report_incident(
                 "system",
@@ -520,7 +666,7 @@ def upload_worker(upload_config: UploadConfig, recording_save_path: str, generat
             dashboard_store.clear_incident("system", "auto-upload", recovery_message="自动上传恢复")
         if upload_config.trigger_mode == "间隔":
             for _ in range(max(1, upload_config.interval_seconds)):
-                if exit_recording or not upload_generation_active(generation):
+                if upload_shutdown_requested() or not upload_generation_active(generation):
                     return
                 time.sleep(1)
 
@@ -623,7 +769,7 @@ def build_dashboard_snapshot() -> DashboardSnapshot:
 
 
 def _display_info_plain() -> None:
-    while True:
+    while not upload_shutdown_requested():
         try:
             dashboard_refresh_event.wait(1)
             dashboard_refresh_event.clear()
@@ -2247,7 +2393,7 @@ def main() -> int:
     except Exception as err:
         logger.warning(f"An unexpected error occurred: {err}")
 
-    while True:
+    while not upload_shutdown_requested():
 
         try:
             if not os.path.isfile(config_file):

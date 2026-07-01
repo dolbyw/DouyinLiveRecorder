@@ -93,6 +93,34 @@ def test_rc_upload_service_waits_for_async_job_success(tmp_path):
     assert service.status.phase == "success"
 
 
+def test_rc_upload_service_stops_running_job_when_shutdown_is_requested(tmp_path):
+    source = tmp_path / "downloads"
+    source.mkdir()
+    (source / "room.ts").write_bytes(b"x")
+    daemon = FakeDaemon()
+    client = FakeRcClient([{"finished": False, "success": False, "progress": {"percentage": 12.5}}])
+    stop_requested = False
+
+    def request_stop(_seconds):
+        nonlocal stop_requested
+        stop_requested = True
+
+    service = RcloneRcUploadService(
+        UploadConfig(enabled=True),
+        daemon=daemon,
+        client=client,
+        sleeper=request_stop,
+        stop_requested=lambda: stop_requested,
+    )
+
+    result = service.run_once(source)
+
+    assert result.phase == "skipped"
+    assert result.message == "upload stopped; local files preserved"
+    assert daemon.stopped == 1
+    assert (source / "room.ts").exists()
+
+
 def test_rc_upload_service_prepares_webdav_remote_before_daemon_start(tmp_path):
     source = tmp_path / "downloads"
     source.mkdir()

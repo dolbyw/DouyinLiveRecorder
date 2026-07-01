@@ -310,7 +310,8 @@ def parse_url_config_entry(raw_line: str, default_quality: str = "原画") -> Ur
             quality, url = split_line
             name = ""
     else:
-        quality, url, name = split_line[0], split_line[1], split_line[2]
+        quality, url = split_line[0], split_line[1]
+        name = ", ".join(split_line[2:])
 
     return UrlConfigEntry(
         quality=QualityLevel.from_raw(quality, default=QualityLevel.ORIGIN),

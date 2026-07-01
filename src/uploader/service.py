@@ -47,6 +47,7 @@ class UploadStatus:
 
 RcloneRunner = Callable[[list[str]], RcloneResult]
 Sleeper = Callable[[float], None]
+StopRequested = Callable[[], bool]
 
 _RCLONE_DURATION_PATTERN = re.compile(r"(?P<value>\d+)(?P<unit>ms|s|m|h|d|w|M|y)")
 _RCLONE_DURATION_MULTIPLIERS = {
@@ -247,6 +248,15 @@ def upload_result_from_success(
     )
 
 
+def upload_result_from_stop_request(*, attempts: int = 0) -> UploadRunResult:
+    return UploadRunResult(
+        phase="skipped",
+        attempts=attempts,
+        exit_code=130,
+        message="upload stopped; local files preserved",
+    )
+
+
 def accept_failed_upload_if_remote_verified(
     config: UploadConfig,
     source_path: str | Path,
@@ -314,10 +324,12 @@ class RcloneUploadService:
         *,
         runner: RcloneRunner = run_rclone_subprocess,
         sleeper: Sleeper = time.sleep,
+        stop_requested: StopRequested | None = None,
     ) -> None:
         self._config = config
         self._runner = runner
         self._sleeper = sleeper
+        self._stop_requested = stop_requested or (lambda: False)
         self._app_root = current_app_root()
         self.status = UploadStatus()
 
@@ -331,6 +343,10 @@ class RcloneUploadService:
                 exit_code=0,
                 message=f"source has no files: {source}",
             )
+            self.status = UploadStatus(phase=result.phase, exit_code=result.exit_code, message=result.message)
+            return result
+        if self._stop_requested():
+            result = upload_result_from_stop_request()
             self.status = UploadStatus(phase=result.phase, exit_code=result.exit_code, message=result.message)
             return result
 
@@ -361,6 +377,10 @@ class RcloneUploadService:
         last_result = RcloneResult(exit_code=1)
 
         for attempt in range(1, max_attempts + 1):
+            if self._stop_requested():
+                result = upload_result_from_stop_request(attempts=attempt - 1)
+                self.status = UploadStatus(phase=result.phase, exit_code=result.exit_code, message=result.message)
+                return result
             self.status = UploadStatus(phase="running", attempts=attempt, message=f"attempt {attempt}/{max_attempts}")
             last_result = self._runner(command)
             if last_result.exit_code == 0:

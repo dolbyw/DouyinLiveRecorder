@@ -42,19 +42,20 @@ async def test_duplicate_active_room_is_rejected():
 
 
 @pytest.mark.asyncio
-async def test_recordings_do_not_queue_behind_probe_limit_setting():
+async def test_recordings_queue_when_worker_limit_is_reached():
     first_started = threading.Event()
     second_started = threading.Event()
-    release = threading.Event()
+    first_release = threading.Event()
+    second_release = threading.Event()
     executor = RecordingExecutor(max_workers=1)
 
     def first(_token):
         first_started.set()
-        release.wait()
+        first_release.wait()
 
     def second(_token):
         second_started.set()
-        release.wait()
+        second_release.wait()
 
     first_task = asyncio.create_task(executor.run("room-1", first))
     second_task = asyncio.create_task(executor.run("room-2", second))
@@ -62,10 +63,15 @@ async def test_recordings_do_not_queue_behind_probe_limit_setting():
 
     try:
         assert first_started.wait(0.2)
+        assert not second_started.wait(0.05)
+        first_release.set()
+        await first_task
         assert second_started.wait(0.2)
     finally:
-        release.set()
-        await first_task
+        first_release.set()
+        second_release.set()
+        if not first_task.done():
+            await first_task
         await second_task
         await executor.close(1)
 

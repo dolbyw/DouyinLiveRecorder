@@ -45,6 +45,7 @@ class RecordingExecutor:
             raise ValueError("max workers must be greater than zero")
         self._jobs: dict[str, _RecordingJob] = {}
         self._closed = False
+        self._worker_slots = asyncio.Semaphore(max_workers)
 
     @property
     def active_room_ids(self) -> frozenset[str]:
@@ -75,19 +76,27 @@ class RecordingExecutor:
         )
         job = _RecordingJob(token=token, future=future, thread=thread)
         self._jobs[room_id] = job
+        acquired_slot = False
         try:
+            await self._worker_slots.acquire()
+            acquired_slot = True
+            if self._closed or token.shutdown_requested:
+                raise RuntimeError("recording executor is closed")
             thread.start()
             return await asyncio.shield(future)
         except asyncio.CancelledError as cancellation:
             token.request_room_stop()
-            try:
-                await asyncio.shield(future)
-            except BaseException:
-                pass
+            if acquired_slot:
+                try:
+                    await asyncio.shield(future)
+                except BaseException:
+                    pass
             raise cancellation
         finally:
             if self._jobs.get(room_id) is job:
                 self._jobs.pop(room_id)
+            if acquired_slot:
+                self._worker_slots.release()
 
     def request_room_stop(self, room_id: str) -> bool:
         job = self._jobs.get(room_id)

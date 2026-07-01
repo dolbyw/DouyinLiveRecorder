@@ -125,15 +125,13 @@ def _render_header(view: DashboardView) -> Any:
 
 def _render_config(view: DashboardView) -> Any:
     content = Table.grid(expand=True)
-    content.add_column(ratio=4)
-    content.add_column(justify="right", ratio=2)
-    config_items = tuple(item for item in view.config_items if not item.startswith("上传 "))
-    summary = Text(" · ".join(config_items), style="dim")
-    path_width = 58 if view.width_mode is ViewWidth.WIDE else 28
+    content.add_column(no_wrap=True, overflow="ellipsis")
+    summary = Text(" · ".join(view.config_items), style="dim", no_wrap=True, overflow="ellipsis")
     save_path = Text()
     save_path.append("保存 ", style="dim")
-    save_path.append(_truncate_path(view.save_path, path_width), style="white")
-    content.add_row(summary, save_path)
+    save_path.append(view.save_path, style="white")
+    content.add_row(summary)
+    content.add_row(save_path)
     return Panel(
         content,
         title=Text("配置", style="bold white"),

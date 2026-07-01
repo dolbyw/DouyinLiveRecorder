@@ -171,7 +171,7 @@ def test_complete_phase_exposes_existing_exit_prompt(snapshot):
 
     view = build_dashboard_view(snapshot, width=140, height=40, room_mode=RoomListMode.COMPACT)
 
-    assert view.complete_prompt == "按任意键退出 | Ctrl+C 强制退出"
+    assert view.complete_prompt == "上传仍会继续；再次按 Ctrl+C 停止上传并退出"
 
 
 def test_recording_detail_sums_segments_and_calculates_bitrate(snapshot, tmp_path):
@@ -238,7 +238,9 @@ def test_dashboard_health_and_config_include_auto_upload(snapshot):
     upload_health = next(item for item in view.health if item.label == "上传")
     assert upload_health.value == "运行中"
     assert upload_health.healthy is True
-    assert "上传 运行中 定时03:00 → 123pan:/LiveBackup/" in view.config_items
+    assert "上传 03:00" in view.config_items
+    assert "WebDAV 123pan" in view.config_items
+    assert "目标 LiveBackup" in view.config_items
 
 
 def test_dashboard_upload_detail_is_available_when_expanded(snapshot):
@@ -296,6 +298,41 @@ def test_dashboard_upload_detail_includes_recent_records(snapshot):
     assert "最近记录" in view.upload_detail
     assert "部分完成" in view.upload_detail
     assert "3 个文件 / 3.0 MB，剩余 1 个 / 1.0 MB" in view.upload_detail
+
+
+def test_dashboard_upload_detail_includes_streamer_file_records(snapshot):
+    upload = DashboardUploadStatus(
+        enabled=True,
+        phase="success",
+        trigger="录制结束",
+        target="123pan:/LiveBackup/",
+        detail="上传完成",
+        records=(
+            DashboardUploadRecord(
+                phase="success",
+                message="上传完成",
+                at=NOW,
+                files_total=1,
+                bytes_total=12_300_000,
+                streamer="Alice",
+                file_name="Alice_20260701.mp4",
+                relative_path="Alice/Alice_20260701.mp4",
+            ),
+        ),
+    )
+    snapshot = replace(snapshot, upload=upload)
+
+    view = build_dashboard_view(
+        snapshot,
+        width=140,
+        height=40,
+        room_mode=RoomListMode.COMPACT,
+        upload_detail_expanded=True,
+    )
+
+    assert "Alice" in view.upload_detail
+    assert "Alice_20260701.mp4" in view.upload_detail
+    assert "1 个文件 / 12.3 MB" in view.upload_detail
 
 
 def test_upload_events_have_specific_labels(snapshot):

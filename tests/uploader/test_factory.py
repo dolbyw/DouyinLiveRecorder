@@ -28,3 +28,13 @@ def test_create_upload_service_passes_progress_callback_to_rc_service():
 
     assert isinstance(service, RcloneRcUploadService)
     assert service.progress_callback is callback
+
+
+def test_create_upload_service_passes_stop_callback_to_rc_service():
+    def callback():
+        return True
+
+    service = create_upload_service(UploadConfig(enabled=True), stop_requested=callback)
+
+    assert isinstance(service, RcloneRcUploadService)
+    assert service.stop_requested is callback

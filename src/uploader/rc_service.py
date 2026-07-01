@@ -11,10 +11,12 @@ from src.models import UploadConfig
 from .rclone_rc import RcloneRcClient, RcloneRcDaemon, RcloneRcError
 from .service import (
     Sleeper,
+    StopRequested,
     UploadRunResult,
     UploadStatus,
     accept_failed_upload_if_remote_verified,
     current_app_root,
+    upload_result_from_stop_request,
     upload_result_from_success,
 )
 
@@ -47,6 +49,7 @@ class RcloneRcUploadService:
         sleeper: Sleeper = time.sleep,
         poll_interval_seconds: float = 5.0,
         progress_callback: ProgressCallback | None = None,
+        stop_requested: StopRequested | None = None,
     ) -> None:
         self.config = config
         self._client = client or RcloneRcClient(base_url=f"http://127.0.0.1:{config.rc_port}")
@@ -54,12 +57,17 @@ class RcloneRcUploadService:
         self._sleeper = sleeper
         self._poll_interval_seconds = max(0.0, poll_interval_seconds)
         self._progress_callback = progress_callback
+        self._stop_requested = stop_requested or (lambda: False)
         self._app_root = current_app_root()
         self.status = UploadStatus()
 
     @property
     def progress_callback(self) -> ProgressCallback | None:
         return self._progress_callback
+
+    @property
+    def stop_requested(self) -> StopRequested:
+        return self._stop_requested
 
     def run_once(self, source_path: str | Path) -> UploadRunResult:
         source = Path(source_path)
@@ -70,6 +78,10 @@ class RcloneRcUploadService:
                 exit_code=0,
                 message=f"source has no files: {source}",
             )
+            self.status = UploadStatus(phase=result.phase, exit_code=result.exit_code, message=result.message)
+            return result
+        if self._stop_requested():
+            result = upload_result_from_stop_request()
             self.status = UploadStatus(phase=result.phase, exit_code=result.exit_code, message=result.message)
             return result
 
@@ -102,6 +114,14 @@ class RcloneRcUploadService:
                         stderr=result.stderr,
                     )
                     return result
+            if result.phase == "skipped":
+                self.status = UploadStatus(
+                    phase=result.phase,
+                    attempts=result.attempts,
+                    exit_code=result.exit_code,
+                    message=result.message,
+                )
+                return result
             if result.phase == "success":
                 result = upload_result_from_success(
                     source_path=source,
@@ -205,6 +225,11 @@ class RcloneRcUploadService:
             if progress is not None and self._progress_callback is not None:
                 self._progress_callback(progress)
             self._sleeper(self._poll_interval_seconds)
+            if self._stop_requested():
+                stop = getattr(self._daemon, "stop", None)
+                if stop is not None:
+                    stop()
+                return upload_result_from_stop_request(attempts=attempt)
 
     @staticmethod
     def _job_progress_message(status: dict[str, Any]) -> str:

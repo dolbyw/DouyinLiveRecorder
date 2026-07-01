@@ -180,6 +180,10 @@ def test_wide_dashboard_matches_approved_full_width_hierarchy():
 def test_wide_dashboard_uses_left_aligned_section_titles_and_labeled_config():
     snapshot = replace(
         dashboard_snapshot(),
+        config=replace(
+            dashboard_snapshot().config,
+            save_path="D:/Projects/DouyinLiveRecorder-main/dist/DouyinLiveRecorder/downloads",
+        ),
         upload=DashboardUploadStatus(
             enabled=True,
             phase="idle",
@@ -197,7 +201,12 @@ def test_wide_dashboard_uses_left_aligned_section_titles_and_labeled_config():
     assert "保存" in output
     assert "自动上传 · [U] 展开" in output
     assert "录制结束 · 123pan:/LiveBackup/" in output
-    assert "上传" not in panel_text(output, "配置")
+    config_panel = panel_text(output, "配置")
+    assert "上传 录后" in config_panel
+    assert "WebDAV 123pan" in config_panel
+    assert "目标 LiveBackup" in config_panel
+    assert "D:/Projects/DouyinLiveRecorder-main/dist/DouyinLiveRecorder/downloads" in config_panel
+    assert "..." not in config_panel
 
 
 def test_collapsed_upload_status_has_discoverable_u_hint_without_header_wrap():
@@ -292,8 +301,8 @@ def test_first_sweep_and_complete_prompt_are_preserved():
     output = render(view, width=140)
 
     assert "首次巡检 6/15" in output
-    assert "按任意键退出" in output
-    assert "Ctrl+C 强制退出" in output
+    assert "上传仍会继续" in output
+    assert "再次按 Ctrl+C 停止上传并退出" in output
 
 
 def test_dashboard_updates_one_live_instance_without_redirecting_streams(monkeypatch):

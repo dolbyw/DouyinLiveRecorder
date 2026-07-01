@@ -31,6 +31,15 @@ def test_parse_url_config_entry_supports_url_then_name_shape():
     assert entry.name == "主播B"
 
 
+def test_parse_url_config_entry_preserves_commas_inside_name():
+    entry = parse_url_config_entry("原画, https://live.example.com/room/4, 主播C, 晚间场", default_quality="流畅")
+
+    assert entry is not None
+    assert entry.quality is QualityLevel.ORIGIN
+    assert entry.url == "https://live.example.com/room/4"
+    assert entry.name == "主播C, 晚间场"
+
+
 def test_normalize_url_config_entry_adds_scheme_and_strips_query_for_known_hosts():
     parsed = parse_url_config_entry("原画, live.douyin.com/123456?foo=bar", default_quality="流畅")
 

@@ -271,7 +271,9 @@ def build_dashboard_view(
         hidden_event_count=len(snapshot.events) - len(events),
         first_sweep=_first_sweep(snapshot),
         complete_prompt=(
-            "按任意键退出 | Ctrl+C 强制退出" if snapshot.phase is AppDisplayPhase.COMPLETE else None
+            "上传仍会继续；再次按 Ctrl+C 停止上传并退出"
+            if snapshot.phase is AppDisplayPhase.COMPLETE
+            else None
         ),
         upload_detail=_upload_detail(snapshot.upload) if upload_detail_expanded and snapshot.upload.enabled else None,
         upload_summary=_upload_summary(snapshot.upload) if snapshot.upload.enabled else None,
@@ -416,8 +418,40 @@ def _config_items(config: DashboardConfig, upload: DashboardUploadStatus | None 
         f"代理 {'开' if config.use_proxy else '关'}",
     ]
     if upload is not None and upload.enabled:
-        items.append(f"上传 {_upload_phase_label(upload.phase)} {upload.trigger} → {upload.target}")
+        items.extend(_upload_config_items(upload))
     return tuple(items)
+
+
+def _upload_config_items(upload: DashboardUploadStatus) -> tuple[str, ...]:
+    items = [f"上传 {_short_upload_trigger(upload.trigger)}"]
+    remote = _upload_remote_name(upload.target)
+    if remote:
+        items.append(f"WebDAV {remote}")
+    target = _upload_target_name(upload.target)
+    if target:
+        items.append(f"目标 {target}")
+    return tuple(items)
+
+
+def _short_upload_trigger(trigger: str) -> str:
+    if trigger == "录制结束":
+        return "录后"
+    if trigger.startswith("间隔"):
+        return trigger.replace("秒", "s")
+    if trigger.startswith("定时"):
+        return trigger.replace("定时", "")
+    return trigger or "-"
+
+
+def _upload_remote_name(target: str) -> str:
+    return target.split(":", maxsplit=1)[0].strip() if ":" in target else ""
+
+
+def _upload_target_name(target: str) -> str:
+    if ":" not in target:
+        return target.strip()
+    path = target.split(":", maxsplit=1)[1].strip().strip("/")
+    return path.rsplit("/", maxsplit=1)[-1] if path else ""
 
 
 def _upload_health(upload: DashboardUploadStatus) -> HealthView:
@@ -443,11 +477,7 @@ def _upload_detail(upload: DashboardUploadStatus) -> str:
     if upload.records:
         rows = [
             "最近记录",
-            *(
-                f"{record.at:%H:%M:%S} {_upload_phase_label(record.phase)} "
-                f"{_upload_record_stats(record)}{record.message}".strip()
-                for record in upload.records[:5]
-            ),
+            *(_upload_record_line(record) for record in upload.records[:8]),
         ]
         return "\n".join((detail, *rows)) if detail else "\n".join(rows)
     return detail
@@ -469,6 +499,15 @@ def _upload_phase_label(phase: str) -> str:
         "disabled": "关闭",
     }
     return labels.get(phase, phase or "未知")
+
+
+def _upload_record_line(record) -> str:
+    owner = f"{record.streamer} · " if getattr(record, "streamer", "") else ""
+    file_name = f"{record.file_name} · " if getattr(record, "file_name", "") else ""
+    return (
+        f"{record.at:%H:%M:%S} {_upload_phase_label(record.phase)} "
+        f"{owner}{file_name}{_upload_record_stats(record)}{record.message}"
+    ).strip()
 
 
 def _upload_record_stats(record) -> str:
